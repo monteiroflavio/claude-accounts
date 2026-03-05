@@ -182,10 +182,81 @@ Usage:
   claude-account unlink           Remove directory link for current directory
   claude-account remove <name>    Delete account <name>
   claude-account status           Show active account and directory link
+  claude-account doctor           Check installation and diagnose issues
   claude-account help             Show this help
 
 Credentials are stored in ~/.claude-accounts/ and never in your repo.
 EOF
+}
+
+# ---------------------------------------------------------------------------
+# doctor — checks the full installation and reports problems
+# ---------------------------------------------------------------------------
+cmd_doctor() {
+  local ok=true
+  local REAL_PATH_FILE="$ACCOUNTS_DIR/real-path"
+
+  echo "claude-accounts doctor"
+  echo "----------------------"
+
+  # 1. Wrapper in PATH
+  local wrapper
+  wrapper=$(command -v claude 2>/dev/null || true)
+  if [[ -z "$wrapper" ]]; then
+    echo "FAIL  'claude' not found in PATH"
+    echo "      Add $(dirname "$(readlink -f "${BASH_SOURCE[0]}")" 2>/dev/null || echo '~/.local/bin') to PATH"
+    ok=false
+  elif grep -q "claude-accounts" "$wrapper" 2>/dev/null; then
+    echo "OK    claude wrapper: $wrapper"
+  else
+    echo "WARN  '$wrapper' does not look like the claude-accounts wrapper"
+    echo "      Make sure ~/.local/bin comes before other PATH entries"
+    ok=false
+  fi
+
+  # 2. Real claude path recorded
+  if [[ -f "$REAL_PATH_FILE" ]]; then
+    local recorded
+    recorded=$(cat "$REAL_PATH_FILE")
+    if [[ -x "$recorded" ]]; then
+      echo "OK    real claude:   $recorded"
+    else
+      echo "FAIL  recorded real claude path is not executable: $recorded"
+      echo "      Re-run install.sh or: echo \"\$(which claude)\" > $REAL_PATH_FILE"
+      ok=false
+    fi
+  else
+    echo "FAIL  $REAL_PATH_FILE not found"
+    echo "      Re-run install.sh to record the real claude path"
+    ok=false
+  fi
+
+  # 3. ~/.claude.json
+  if [[ -f "$CLAUDE_JSON" ]]; then
+    echo "OK    credentials:   $CLAUDE_JSON ($(wc -c < "$CLAUDE_JSON") bytes)"
+  else
+    echo "WARN  $CLAUDE_JSON not found — run 'claude' to log in first"
+  fi
+
+  # 4. Saved accounts
+  _ensure_dirs
+  local n=0
+  for d in "$ACCOUNTS_DB"/*/; do
+    [[ -d "$d" ]] && n=$((n + 1))
+  done
+  echo "OK    saved accounts: $n"
+
+  # 5. Directory links
+  local links=0
+  [[ -f "$LINKS_FILE" ]] && links=$(grep -c . "$LINKS_FILE" 2>/dev/null || true)
+  echo "OK    directory links: $links"
+
+  echo ""
+  if $ok; then
+    echo "Everything looks good."
+  else
+    echo "Issues found — see FAIL lines above."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -199,6 +270,7 @@ case "${1:-}" in
   unlink)  cmd_unlink ;;
   remove)  shift; cmd_remove "$@" ;;
   status)  cmd_status ;;
+  doctor)  cmd_doctor ;;
   -h|--help|help|"") usage ;;
   *) echo "Unknown command: $1"; echo; usage; exit 1 ;;
 esac
