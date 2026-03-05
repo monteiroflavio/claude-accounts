@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # claude — wrapper that auto-switches Claude.ai accounts by project directory.
 #
-# Install via install.sh, which renames the original `claude` binary to
+# Install via install.sh, which copies the original `claude` binary to
 # `claude.real` so this script can call it after switching accounts.
-set -euo pipefail
 
 ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
 ACCOUNTS_DB="$ACCOUNTS_DIR/accounts"
@@ -11,93 +10,141 @@ LINKS_FILE="$ACCOUNTS_DIR/links"
 CURRENT_FILE="$ACCOUNTS_DIR/current"
 CLAUDE_JSON="$HOME/.claude.json"
 
-# ---------------------------------------------------------------------------
-# Find the real claude binary (never this script itself).
-# install.sh renames the original to claude.real; fall back to searching PATH
-# while skipping our own installation directory.
-# ---------------------------------------------------------------------------
-_real_claude() {
-  # Prefer the explicitly backed-up binary
-  local self_dir
-  self_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-  if [[ -x "$self_dir/claude.real" ]]; then
-    echo "$self_dir/claude.real"
-    return
-  fi
-  # Search PATH, skipping our own directory
-  local IFS_ORIG="$IFS"
-  IFS=':'
-  for dir in $PATH; do
-    IFS="$IFS_ORIG"
-    [[ "$dir" == "$self_dir" ]] && continue
-    if [[ -x "$dir/claude" ]]; then
-      echo "$dir/claude"
-      return
-    fi
-  done
-  IFS="$IFS_ORIG"
-  echo "claude-accounts: cannot find the real claude binary" >&2
-  echo "  Is Claude Code installed? Try: npm install -g @anthropic-ai/claude-code" >&2
-  exit 1
+# Set CLAUDE_ACCOUNTS_DEBUG=1 to trace wrapper decisions.
+_debug() {
+  [[ "${CLAUDE_ACCOUNTS_DEBUG:-0}" == "1" ]] && echo "[claude-accounts] $*" >&2 || true
 }
 
 # ---------------------------------------------------------------------------
-# Walk from the current directory up to / looking for a directory link.
+# Find the real claude binary — never this wrapper itself.
+# install.sh copies the original to claude.real in the same directory.
+# ---------------------------------------------------------------------------
+_real_claude() {
+  local self
+  self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  local self_dir
+  self_dir="$(dirname "$self")"
+
+  # 1. Explicit override via environment variable
+  if [[ -n "${CLAUDE_REAL:-}" ]]; then
+    if [[ -x "$CLAUDE_REAL" ]]; then
+      _debug "using CLAUDE_REAL=$CLAUDE_REAL"
+      echo "$CLAUDE_REAL"
+      return 0
+    fi
+    echo "claude-accounts: CLAUDE_REAL='$CLAUDE_REAL' is not executable" >&2
+    return 1
+  fi
+
+  # 2. claude.real in the same directory (created by install.sh)
+  if [[ -x "$self_dir/claude.real" ]]; then
+    _debug "found claude.real at $self_dir/claude.real"
+    echo "$self_dir/claude.real"
+    return 0
+  fi
+
+  # 3. Search PATH, skipping our own directory to avoid calling ourselves
+  local found=""
+  while IFS=':' read -ra dirs; do
+    for dir in "${dirs[@]}"; do
+      [[ -z "$dir" ]] && dir="."
+      [[ "$dir" == "$self_dir" ]] && continue
+      if [[ -x "$dir/claude" ]]; then
+        found="$dir/claude"
+        break 2
+      fi
+    done
+  done <<< "$PATH"
+
+  if [[ -n "$found" ]]; then
+    _debug "found claude in PATH at $found"
+    echo "$found"
+    return 0
+  fi
+
+  cat >&2 <<EOF
+claude-accounts: cannot find the real claude binary.
+
+Tried:
+  1. \$CLAUDE_REAL env var      (not set)
+  2. $self_dir/claude.real  (not found)
+  3. PATH search               (no other 'claude' found)
+
+Fix: re-run install.sh from the claude-accounts repo, or set CLAUDE_REAL
+to the full path of your claude binary (e.g. export CLAUDE_REAL=/usr/local/bin/claude).
+EOF
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Walk from PWD up to / looking for a directory→account link.
 # ---------------------------------------------------------------------------
 _find_linked_account() {
   [[ -f "$LINKS_FILE" ]] || return 0
   local dir="$PWD"
   while true; do
-    local match
-    match=$(grep -F "$dir " "$LINKS_FILE" 2>/dev/null \
-            | awk '{print $2}' | head -1 || true)
+    local match=""
+    match=$(grep -F "$dir " "$LINKS_FILE" 2>/dev/null | awk '{print $2}' | head -1) || true
     if [[ -n "$match" ]]; then
       echo "$match"
-      return
+      return 0
     fi
     [[ "$dir" == "/" ]] && break
     dir="$(dirname "$dir")"
   done
+  return 0
 }
 
 # ---------------------------------------------------------------------------
-# Swap ~/.claude.json for a named account's credentials.
+# Swap ~/.claude.json with a named account's saved credentials.
 # ---------------------------------------------------------------------------
 _activate_account() {
   local name="$1"
   local cred_file="$ACCOUNTS_DB/$name/credentials"
+
   if [[ ! -f "$cred_file" ]]; then
-    echo "claude-accounts: account '$name' not found (check: claude-account list)" >&2
+    echo "claude-accounts: account '$name' is linked to this directory but its" >&2
+    echo "  credentials file was not found. Run: claude-account list" >&2
     return 1
   fi
-  # Persist the currently active account's credentials first
+
+  # Persist the currently active account's credentials before switching
   local current=""
-  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
-  if [[ -n "$current" && -f "$CLAUDE_JSON" && "$current" != "$name" ]]; then
+  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
+  if [[ -n "$current" && "$current" != "$name" && -f "$CLAUDE_JSON" ]]; then
     mkdir -p "$ACCOUNTS_DB/$current"
-    cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$current/credentials"
+    cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$current/credentials" || true
+    _debug "saved credentials for '$current'"
   fi
-  cp "$cred_file" "$CLAUDE_JSON"
-  echo "$name" > "$CURRENT_FILE"
+
+  cp "$cred_file" "$CLAUDE_JSON" || {
+    echo "claude-accounts: failed to copy credentials for '$name' to $CLAUDE_JSON" >&2
+    return 1
+  }
+  echo "$name" > "$CURRENT_FILE" || true
+  _debug "activated account '$name'"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
-  local linked
-  linked=$(_find_linked_account)
+  local linked=""
+  linked=$(_find_linked_account) || true
 
   if [[ -n "$linked" ]]; then
     local current=""
-    [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+    [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
+    _debug "directory linked to '$linked' (active: '${current:-none}')"
     if [[ "$linked" != "$current" ]]; then
-      _activate_account "$linked"
+      _activate_account "$linked" || true
     fi
   fi
 
-  local real_bin
-  real_bin=$(_real_claude)
+  local real_bin=""
+  real_bin=$(_real_claude) || exit 1
+  _debug "exec: $real_bin $*"
   exec "$real_bin" "$@"
 }
 
