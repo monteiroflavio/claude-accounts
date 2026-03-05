@@ -214,23 +214,11 @@ _locate_real_claude() {
     done
   done <<< "$PATH"
 
-  # npm global bin
-  local npm_bin=""
-  npm_bin="$(npm bin -g 2>/dev/null)" || true
-  [[ -n "$npm_bin" ]] && _is_real_claude_bin "$npm_bin/claude" && { echo "$npm_bin/claude"; return 0; }
-
-  # Common fixed locations
+  # Common fixed locations for binary installs
   local c
-  for c in /usr/local/bin/claude /opt/homebrew/bin/claude \
-            "$HOME/.npm-global/bin/claude" "$HOME/.npm/bin/claude" \
-            /usr/bin/claude; do
+  for c in /usr/local/bin/claude /opt/homebrew/bin/claude /usr/bin/claude \
+            "$HOME/.local/bin/claude" "$HOME/bin/claude"; do
     _is_real_claude_bin "$c" && { echo "$c"; return 0; }
-  done
-
-  # nvm paths
-  local nvmc
-  for nvmc in "$HOME/.nvm/versions/node"/*/bin/claude; do
-    _is_real_claude_bin "$nvmc" && { echo "$nvmc"; return 0; }
   done
 
   return 1

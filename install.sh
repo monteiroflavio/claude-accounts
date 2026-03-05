@@ -14,8 +14,7 @@ mkdir -p "$INSTALL_DIR" "$ACCOUNTS_DIR"
 
 # -------------------------------------------------------------------------
 # Locate the real claude binary.
-# A candidate is valid when it is executable and does NOT contain our
-# wrapper marker, meaning it is the genuine Claude Code binary.
+# Valid = executable and does NOT contain our wrapper marker.
 # -------------------------------------------------------------------------
 _is_real_claude() {
   local bin="$1"
@@ -39,31 +38,51 @@ _find_real_claude() {
     done
   done <<< "$PATH"
 
-  # 2. npm global bin directory
-  local npm_bin=""
-  npm_bin="$(npm bin -g 2>/dev/null || npm prefix -g 2>/dev/null | xargs -I{} echo {}/bin)" || true
-  if [[ -n "$npm_bin" ]]; then
-    _is_real_claude "$npm_bin/claude" && { echo "$npm_bin/claude"; return 0; }
-  fi
-
-  # 3. Common fixed locations (macOS / Linux)
-  local candidates=(
-    "/usr/local/bin/claude"
-    "/opt/homebrew/bin/claude"
-    "$HOME/.npm-global/bin/claude"
-    "$HOME/.npm/bin/claude"
-    "/usr/bin/claude"
-  )
-  # Also check nvm-style paths
-  for nvmdir in "$HOME/.nvm/versions/node"/*/bin; do
-    candidates+=("$nvmdir/claude")
-  done
-
-  for c in "${candidates[@]}"; do
+  # 2. Common fixed locations (binary installs on macOS / Linux)
+  local c
+  for c in /usr/local/bin/claude /opt/homebrew/bin/claude /usr/bin/claude \
+            "$HOME/.local/bin/claude" "$HOME/bin/claude"; do
     _is_real_claude "$c" && { echo "$c"; return 0; }
   done
 
   return 1
+}
+
+# -------------------------------------------------------------------------
+# Ask the user interactively if auto-discovery fails.
+# -------------------------------------------------------------------------
+_ask_for_real_claude() {
+  # Non-interactive (piped) — cannot prompt
+  if [[ ! -t 0 ]]; then
+    echo ""
+    echo "WARNING: non-interactive shell; cannot prompt for claude path."
+    echo "  Record it manually:"
+    echo "    echo /path/to/claude > $REAL_PATH_FILE"
+    echo ""
+    return 1
+  fi
+
+  echo ""
+  echo "Could not find the claude binary automatically."
+  echo "Please enter the full path to the real claude binary."
+  echo "(Tip: open a NEW terminal tab and run: which claude)"
+  echo ""
+
+  local input=""
+  while true; do
+    printf "  Path to claude: "
+    read -r input
+    input="${input/#\~/$HOME}"   # expand leading ~
+    if _is_real_claude "$input"; then
+      echo "$input"
+      return 0
+    elif [[ -z "$input" ]]; then
+      echo "  (skipped — you can set it later: echo /path/to/claude > $REAL_PATH_FILE)"
+      return 1
+    else
+      echo "  '$input' is not executable or not found. Try again, or press Enter to skip."
+    fi
+  done
 }
 
 REAL_CLAUDE=""
@@ -74,15 +93,9 @@ if REAL_CLAUDE=$(_find_real_claude); then
 elif [[ -f "$REAL_PATH_FILE" ]]; then
   REAL_CLAUDE=$(cat "$REAL_PATH_FILE")
   echo "    (using previously recorded path: $REAL_CLAUDE)"
-else
-  echo ""
-  echo "WARNING: could not find the real claude binary."
-  echo "  Install Claude Code first:  npm install -g @anthropic-ai/claude-code"
-  echo "  Then re-run this installer."
-  echo ""
-  echo "  Or record it manually (run 'which claude' BEFORE sourcing this shell rc):"
-  echo "    echo /path/to/real/claude > $REAL_PATH_FILE"
-  echo ""
+elif REAL_CLAUDE=$(_ask_for_real_claude); then
+  echo "$REAL_CLAUDE" > "$REAL_PATH_FILE"
+  echo "==> Saved real claude path → $REAL_PATH_FILE"
 fi
 
 # -------------------------------------------------------------------------

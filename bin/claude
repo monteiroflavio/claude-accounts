@@ -46,7 +46,7 @@ _real_claude() {
     _debug "recorded path '$recorded' no longer executable; falling back to PATH search"
   fi
 
-  # 3. Extended search: PATH (skipping self) + npm global bin + common locations
+  # 3. PATH search (skipping self) + common fixed locations
   local self
   self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
   local self_dir
@@ -75,30 +75,12 @@ _real_claude() {
     done
   done <<< "$PATH"
 
-  # 3b. npm global bin
-  if [[ -z "$found" ]]; then
-    local npm_bin=""
-    npm_bin="$(npm bin -g 2>/dev/null)" || true
-    if [[ -n "$npm_bin" ]] && _candidate_ok "$npm_bin/claude"; then
-      found="$npm_bin/claude"
-    fi
-  fi
-
-  # 3c. Common fixed locations
+  # 3b. Common fixed locations for binary installs
   if [[ -z "$found" ]]; then
     local c
-    for c in /usr/local/bin/claude /opt/homebrew/bin/claude \
-              "$HOME/.npm-global/bin/claude" "$HOME/.npm/bin/claude" \
-              /usr/bin/claude; do
+    for c in /usr/local/bin/claude /opt/homebrew/bin/claude /usr/bin/claude \
+              "$HOME/.local/bin/claude" "$HOME/bin/claude"; do
       _candidate_ok "$c" && { found="$c"; break; }
-    done
-  fi
-
-  # 3d. nvm-style paths
-  if [[ -z "$found" ]]; then
-    local nvmclaude
-    for nvmclaude in "$HOME/.nvm/versions/node"/*/bin/claude; do
-      _candidate_ok "$nvmclaude" && { found="$nvmclaude"; break; }
     done
   fi
 
@@ -113,20 +95,20 @@ _real_claude() {
 claude-accounts: cannot find the real claude binary.
 
 Resolution order tried:
-  1. \$CLAUDE_REAL env var           (not set)
-  2. $REAL_PATH_FILE  (missing or not executable)
-  3. PATH search                     (no real claude found)
+  1. \$CLAUDE_REAL env var        (not set)
+  2. $REAL_PATH_FILE
+     (missing or not executable)
+  3. PATH + common locations     (not found)
 
-To fix, run one of:
-  a) Re-run install.sh after making sure 'claude' is installed:
-       npm install -g @anthropic-ai/claude-code
-       bash ~/path/to/claude-accounts/install.sh
+To fix:
+  a) Re-run the installer (it will prompt you for the path):
+       bash /path/to/claude-accounts/install.sh
 
-  b) Set the path manually:
-       echo "\$(which claude)" > $REAL_PATH_FILE
+  b) Record the path manually:
+       echo /path/to/real/claude > $REAL_PATH_FILE
 
-  c) Use the env var override:
-       CLAUDE_REAL=/usr/local/bin/claude claude
+  c) One-shot override:
+       CLAUDE_REAL=/path/to/real/claude claude
 EOF
   return 1
 }
