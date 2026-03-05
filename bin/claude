@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # claude — wrapper that auto-switches Claude.ai accounts by project directory.
 #
-# Install via install.sh, which copies the original `claude` binary to
-# `claude.real` so this script can call it after switching accounts.
+# Requires install.sh to have been run first; it records the real claude
+# binary path in ~/.claude-accounts/real-path.
 
 ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
 ACCOUNTS_DB="$ACCOUNTS_DIR/accounts"
 LINKS_FILE="$ACCOUNTS_DIR/links"
 CURRENT_FILE="$ACCOUNTS_DIR/current"
+REAL_PATH_FILE="$ACCOUNTS_DIR/real-path"
 CLAUDE_JSON="$HOME/.claude.json"
 
 # Set CLAUDE_ACCOUNTS_DEBUG=1 to trace wrapper decisions.
@@ -16,48 +17,59 @@ _debug() {
 }
 
 # ---------------------------------------------------------------------------
-# Find the real claude binary — never this wrapper itself.
-# install.sh copies the original to claude.real in the same directory.
+# Find the real claude binary. Resolution order:
+#   1. $CLAUDE_REAL env var (manual override)
+#   2. ~/.claude-accounts/real-path (written by install.sh)
+#   3. PATH search excluding our own directory
 # ---------------------------------------------------------------------------
 _real_claude() {
-  local self
-  self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-  local self_dir
-  self_dir="$(dirname "$self")"
-
-  # 1. Explicit override via environment variable
+  # 1. Explicit override
   if [[ -n "${CLAUDE_REAL:-}" ]]; then
     if [[ -x "$CLAUDE_REAL" ]]; then
-      _debug "using CLAUDE_REAL=$CLAUDE_REAL"
+      _debug "using CLAUDE_REAL override: $CLAUDE_REAL"
       echo "$CLAUDE_REAL"
       return 0
     fi
-    echo "claude-accounts: CLAUDE_REAL='$CLAUDE_REAL' is not executable" >&2
+    echo "claude-accounts: CLAUDE_REAL='$CLAUDE_REAL' is not executable." >&2
     return 1
   fi
 
-  # 2. claude.real in the same directory (created by install.sh)
-  if [[ -x "$self_dir/claude.real" ]]; then
-    _debug "found claude.real at $self_dir/claude.real"
-    echo "$self_dir/claude.real"
-    return 0
+  # 2. Path recorded by install.sh
+  if [[ -f "$REAL_PATH_FILE" ]]; then
+    local recorded
+    recorded=$(cat "$REAL_PATH_FILE")
+    if [[ -x "$recorded" ]]; then
+      _debug "using recorded real-path: $recorded"
+      echo "$recorded"
+      return 0
+    fi
+    _debug "recorded path '$recorded' no longer executable; falling back to PATH search"
   fi
 
-  # 3. Search PATH, skipping our own directory to avoid calling ourselves
+  # 3. PATH search — skip our own directory to avoid calling ourselves
+  local self
+  self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  local self_dir
+  self_dir="$(cd "$(dirname "$self")" && pwd)"
+
   local found=""
   while IFS=':' read -ra dirs; do
     for dir in "${dirs[@]}"; do
       [[ -z "$dir" ]] && dir="."
-      [[ "$dir" == "$self_dir" ]] && continue
-      if [[ -x "$dir/claude" ]]; then
-        found="$dir/claude"
+      local abs_dir
+      abs_dir="$(cd "$dir" 2>/dev/null && pwd)" || continue
+      [[ "$abs_dir" == "$self_dir" ]] && continue
+      if [[ -x "$abs_dir/claude" ]] && ! grep -q "claude-accounts" "$abs_dir/claude" 2>/dev/null; then
+        found="$abs_dir/claude"
         break 2
       fi
     done
   done <<< "$PATH"
 
   if [[ -n "$found" ]]; then
-    _debug "found claude in PATH at $found"
+    _debug "found real claude in PATH: $found"
+    # Cache for next time
+    echo "$found" > "$REAL_PATH_FILE" 2>/dev/null || true
     echo "$found"
     return 0
   fi
@@ -65,13 +77,21 @@ _real_claude() {
   cat >&2 <<EOF
 claude-accounts: cannot find the real claude binary.
 
-Tried:
-  1. \$CLAUDE_REAL env var      (not set)
-  2. $self_dir/claude.real  (not found)
-  3. PATH search               (no other 'claude' found)
+Resolution order tried:
+  1. \$CLAUDE_REAL env var           (not set)
+  2. $REAL_PATH_FILE  (missing or not executable)
+  3. PATH search                     (no real claude found)
 
-Fix: re-run install.sh from the claude-accounts repo, or set CLAUDE_REAL
-to the full path of your claude binary (e.g. export CLAUDE_REAL=/usr/local/bin/claude).
+To fix, run one of:
+  a) Re-run install.sh after making sure 'claude' is installed:
+       npm install -g @anthropic-ai/claude-code
+       bash ~/path/to/claude-accounts/install.sh
+
+  b) Set the path manually:
+       echo "\$(which claude)" > $REAL_PATH_FILE
+
+  c) Use the env var override:
+       CLAUDE_REAL=/usr/local/bin/claude claude
 EOF
   return 1
 }
@@ -103,8 +123,8 @@ _activate_account() {
   local cred_file="$ACCOUNTS_DB/$name/credentials"
 
   if [[ ! -f "$cred_file" ]]; then
-    echo "claude-accounts: account '$name' is linked to this directory but its" >&2
-    echo "  credentials file was not found. Run: claude-account list" >&2
+    echo "claude-accounts: account '$name' is linked here but has no saved credentials." >&2
+    echo "  Run: claude-account list" >&2
     return 1
   fi
 
@@ -118,7 +138,7 @@ _activate_account() {
   fi
 
   cp "$cred_file" "$CLAUDE_JSON" || {
-    echo "claude-accounts: failed to copy credentials for '$name' to $CLAUDE_JSON" >&2
+    echo "claude-accounts: failed to write credentials for '$name' to $CLAUDE_JSON" >&2
     return 1
   }
   echo "$name" > "$CURRENT_FILE" || true
@@ -144,6 +164,7 @@ main() {
 
   local real_bin=""
   real_bin=$(_real_claude) || exit 1
+
   _debug "exec: $real_bin $*"
   exec "$real_bin" "$@"
 }
