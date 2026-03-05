@@ -46,29 +46,46 @@ _real_claude() {
     _debug "recorded path '$recorded' no longer executable; falling back to PATH search"
   fi
 
-  # 3. PATH search — skip our own directory to avoid calling ourselves
+  # 3. PATH search (skipping self) + common fixed locations
   local self
   self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
   local self_dir
   self_dir="$(cd "$(dirname "$self")" && pwd)"
 
+  _candidate_ok() {
+    local c="$1"
+    [[ -x "$c" ]] || return 1
+    ! grep -qI "claude-accounts" "$c" 2>/dev/null || return 1
+    return 0
+  }
+
   local found=""
+
+  # 3a. PATH search
   while IFS=':' read -ra dirs; do
     for dir in "${dirs[@]}"; do
       [[ -z "$dir" ]] && dir="."
       local abs_dir
       abs_dir="$(cd "$dir" 2>/dev/null && pwd)" || continue
       [[ "$abs_dir" == "$self_dir" ]] && continue
-      if [[ -x "$abs_dir/claude" ]] && ! grep -q "claude-accounts" "$abs_dir/claude" 2>/dev/null; then
+      if _candidate_ok "$abs_dir/claude"; then
         found="$abs_dir/claude"
         break 2
       fi
     done
   done <<< "$PATH"
 
+  # 3b. Common fixed locations for binary installs
+  if [[ -z "$found" ]]; then
+    local c
+    for c in /usr/local/bin/claude /opt/homebrew/bin/claude /usr/bin/claude \
+              "$HOME/.local/bin/claude" "$HOME/bin/claude"; do
+      _candidate_ok "$c" && { found="$c"; break; }
+    done
+  fi
+
   if [[ -n "$found" ]]; then
-    _debug "found real claude in PATH: $found"
-    # Cache for next time
+    _debug "found real claude: $found"
     echo "$found" > "$REAL_PATH_FILE" 2>/dev/null || true
     echo "$found"
     return 0
@@ -78,20 +95,20 @@ _real_claude() {
 claude-accounts: cannot find the real claude binary.
 
 Resolution order tried:
-  1. \$CLAUDE_REAL env var           (not set)
-  2. $REAL_PATH_FILE  (missing or not executable)
-  3. PATH search                     (no real claude found)
+  1. \$CLAUDE_REAL env var        (not set)
+  2. $REAL_PATH_FILE
+     (missing or not executable)
+  3. PATH + common locations     (not found)
 
-To fix, run one of:
-  a) Re-run install.sh after making sure 'claude' is installed:
-       npm install -g @anthropic-ai/claude-code
-       bash ~/path/to/claude-accounts/install.sh
+To fix:
+  a) Re-run the installer (it will prompt you for the path):
+       bash /path/to/claude-accounts/install.sh
 
-  b) Set the path manually:
-       echo "\$(which claude)" > $REAL_PATH_FILE
+  b) Record the path manually:
+       echo /path/to/real/claude > $REAL_PATH_FILE
 
-  c) Use the env var override:
-       CLAUDE_REAL=/usr/local/bin/claude claude
+  c) One-shot override:
+       CLAUDE_REAL=/path/to/real/claude claude
 EOF
   return 1
 }

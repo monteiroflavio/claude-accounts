@@ -190,11 +190,50 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Shared helper: is this an unmodified real claude binary?
+# ---------------------------------------------------------------------------
+_is_real_claude_bin() {
+  local bin="$1"
+  [[ -x "$bin" ]] || return 1
+  ! grep -qI "claude-accounts" "$bin" 2>/dev/null || return 1
+  return 0
+}
+
+# Extended search for the real claude, mirroring bin/claude logic.
+_locate_real_claude() {
+  local skip_dir="${1:-}"
+
+  # PATH search
+  while IFS=':' read -ra dirs; do
+    for dir in "${dirs[@]}"; do
+      [[ -z "$dir" ]] && dir="."
+      local abs=""
+      abs="$(cd "$dir" 2>/dev/null && pwd)" || continue
+      [[ -n "$skip_dir" && "$abs" == "$skip_dir" ]] && continue
+      _is_real_claude_bin "$abs/claude" && { echo "$abs/claude"; return 0; }
+    done
+  done <<< "$PATH"
+
+  # Common fixed locations for binary installs
+  local c
+  for c in /usr/local/bin/claude /opt/homebrew/bin/claude /usr/bin/claude \
+            "$HOME/.local/bin/claude" "$HOME/bin/claude"; do
+    _is_real_claude_bin "$c" && { echo "$c"; return 0; }
+  done
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # doctor — checks the full installation and reports problems
 # ---------------------------------------------------------------------------
 cmd_doctor() {
+  local fix_mode=false
+  [[ "${1:-}" == "--fix" ]] && fix_mode=true
+
   local ok=true
   local REAL_PATH_FILE="$ACCOUNTS_DIR/real-path"
+  local wrapper_dir=""
 
   echo "claude-accounts doctor"
   echo "----------------------"
@@ -204,31 +243,46 @@ cmd_doctor() {
   wrapper=$(command -v claude 2>/dev/null || true)
   if [[ -z "$wrapper" ]]; then
     echo "FAIL  'claude' not found in PATH"
-    echo "      Add $(dirname "$(readlink -f "${BASH_SOURCE[0]}")" 2>/dev/null || echo '~/.local/bin') to PATH"
     ok=false
-  elif grep -q "claude-accounts" "$wrapper" 2>/dev/null; then
+  elif grep -qI "claude-accounts" "$wrapper" 2>/dev/null; then
     echo "OK    claude wrapper: $wrapper"
+    wrapper_dir="$(cd "$(dirname "$wrapper")" && pwd)"
   else
-    echo "WARN  '$wrapper' does not look like the claude-accounts wrapper"
+    echo "WARN  '$wrapper' is not the claude-accounts wrapper"
     echo "      Make sure ~/.local/bin comes before other PATH entries"
     ok=false
   fi
 
-  # 2. Real claude path recorded
+  # 2. Real claude path
   if [[ -f "$REAL_PATH_FILE" ]]; then
     local recorded
     recorded=$(cat "$REAL_PATH_FILE")
-    if [[ -x "$recorded" ]]; then
+    if _is_real_claude_bin "$recorded"; then
       echo "OK    real claude:   $recorded"
     else
-      echo "FAIL  recorded real claude path is not executable: $recorded"
-      echo "      Re-run install.sh or: echo \"\$(which claude)\" > $REAL_PATH_FILE"
+      echo "FAIL  recorded path not usable: $recorded"
       ok=false
     fi
   else
     echo "FAIL  $REAL_PATH_FILE not found"
-    echo "      Re-run install.sh to record the real claude path"
     ok=false
+
+    # Attempt auto-fix
+    local found=""
+    if found=$(_locate_real_claude "$wrapper_dir"); then
+      if $fix_mode; then
+        echo "$found" > "$REAL_PATH_FILE"
+        echo "FIX   wrote $found → $REAL_PATH_FILE"
+        ok=true
+      else
+        echo "      Found candidate: $found"
+        echo "      Run: claude-account doctor --fix   (to apply automatically)"
+        echo "      Or:  echo \"$found\" > $REAL_PATH_FILE"
+      fi
+    else
+      echo "      Could not auto-locate real claude binary."
+      echo "      Run: echo /path/to/claude > $REAL_PATH_FILE"
+    fi
   fi
 
   # 3. ~/.claude.json
@@ -270,7 +324,7 @@ case "${1:-}" in
   unlink)  cmd_unlink ;;
   remove)  shift; cmd_remove "$@" ;;
   status)  cmd_status ;;
-  doctor)  cmd_doctor ;;
+  doctor)  shift; cmd_doctor "$@" ;;
   -h|--help|help|"") usage ;;
   *) echo "Unknown command: $1"; echo; usage; exit 1 ;;
 esac
