@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# claude-account — multi-account manager for Claude Code
+set -euo pipefail
+
+ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
+ACCOUNTS_DB="$ACCOUNTS_DIR/accounts"
+LINKS_FILE="$ACCOUNTS_DIR/links"
+CURRENT_FILE="$ACCOUNTS_DIR/current"
+CLAUDE_JSON="$HOME/.claude.json"
+
+_ensure_dirs() {
+  mkdir -p "$ACCOUNTS_DIR" "$ACCOUNTS_DB"
+  touch "$LINKS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# add <name>
+# ---------------------------------------------------------------------------
+cmd_add() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { echo "Usage: claude-account add <name>"; exit 1; }
+  [[ ! -f "$CLAUDE_JSON" ]] && {
+    echo "Error: ~/.claude.json not found. Log in to Claude first (run: claude)."
+    exit 1
+  }
+  _ensure_dirs
+  mkdir -p "$ACCOUNTS_DB/$name"
+  cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$name/credentials"
+  echo "$name" > "$CURRENT_FILE"
+  echo "Saved current credentials as account '$name'."
+}
+
+# ---------------------------------------------------------------------------
+# list
+# ---------------------------------------------------------------------------
+cmd_list() {
+  _ensure_dirs
+  local current=""
+  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+  local found=false
+  for d in "$ACCOUNTS_DB"/*/; do
+    [[ -d "$d" ]] || continue
+    found=true
+    local name
+    name=$(basename "$d")
+    if [[ "$name" == "$current" ]]; then
+      echo "* $name  (active)"
+    else
+      echo "  $name"
+    fi
+  done
+  $found || echo "No accounts saved yet. Run: claude-account add <name>"
+}
+
+# ---------------------------------------------------------------------------
+# use <name>
+# ---------------------------------------------------------------------------
+cmd_use() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { echo "Usage: claude-account use <name>"; exit 1; }
+  local cred_file="$ACCOUNTS_DB/$name/credentials"
+  [[ ! -f "$cred_file" ]] && {
+    echo "Error: account '$name' not found. Run: claude-account list"
+    exit 1
+  }
+  # Persist current credentials before switching
+  local current=""
+  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+  if [[ -n "$current" && -f "$CLAUDE_JSON" && "$current" != "$name" ]]; then
+    mkdir -p "$ACCOUNTS_DB/$current"
+    cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$current/credentials"
+  fi
+  cp "$cred_file" "$CLAUDE_JSON"
+  echo "$name" > "$CURRENT_FILE"
+  echo "Switched to account '$name'."
+}
+
+# ---------------------------------------------------------------------------
+# link [name]  — associates the current directory with an account
+# ---------------------------------------------------------------------------
+cmd_link() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    [[ -f "$CURRENT_FILE" ]] && name=$(cat "$CURRENT_FILE")
+    [[ -z "$name" ]] && {
+      echo "Usage: claude-account link <name>"
+      echo "       (or switch to an account first with: claude-account use <name>)"
+      exit 1
+    }
+  fi
+  [[ ! -d "$ACCOUNTS_DB/$name" ]] && {
+    echo "Error: account '$name' not found. Run: claude-account list"
+    exit 1
+  }
+  _ensure_dirs
+  local dir="$PWD"
+  # Remove any existing link for this directory
+  if [[ -f "$LINKS_FILE" ]]; then
+    local tmp
+    tmp=$(mktemp)
+    grep -vF "$dir " "$LINKS_FILE" > "$tmp" || true
+    mv "$tmp" "$LINKS_FILE"
+  fi
+  echo "$dir $name" >> "$LINKS_FILE"
+  echo "Linked '$dir' → account '$name'."
+}
+
+# ---------------------------------------------------------------------------
+# unlink  — removes the directory link for the current directory
+# ---------------------------------------------------------------------------
+cmd_unlink() {
+  local dir="$PWD"
+  if [[ -f "$LINKS_FILE" ]]; then
+    local tmp
+    tmp=$(mktemp)
+    grep -vF "$dir " "$LINKS_FILE" > "$tmp" || true
+    mv "$tmp" "$LINKS_FILE"
+  fi
+  echo "Removed link for '$dir'."
+}
+
+# ---------------------------------------------------------------------------
+# remove <name>
+# ---------------------------------------------------------------------------
+cmd_remove() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && { echo "Usage: claude-account remove <name>"; exit 1; }
+  [[ ! -d "$ACCOUNTS_DB/$name" ]] && {
+    echo "Error: account '$name' not found."
+    exit 1
+  }
+  rm -rf "${ACCOUNTS_DB:?}/$name"
+  # Remove directory links pointing to this account
+  if [[ -f "$LINKS_FILE" ]]; then
+    local tmp
+    tmp=$(mktemp)
+    grep -v " $name$" "$LINKS_FILE" > "$tmp" || true
+    mv "$tmp" "$LINKS_FILE"
+  fi
+  # Clear current marker if we removed the active account
+  local current=""
+  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+  [[ "$current" == "$name" ]] && rm -f "$CURRENT_FILE"
+  echo "Removed account '$name'."
+}
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+cmd_status() {
+  _ensure_dirs
+  local current=""
+  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+  if [[ -n "$current" ]]; then
+    echo "Active account : $current"
+  else
+    echo "Active account : (none)"
+  fi
+  if [[ -f "$LINKS_FILE" ]]; then
+    local linked
+    linked=$(grep -F "$PWD " "$LINKS_FILE" 2>/dev/null | awk '{print $2}' | head -1 || true)
+    if [[ -n "$linked" ]]; then
+      echo "Directory link : $linked"
+    else
+      echo "Directory link : (none for $PWD)"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# usage
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<'EOF'
+claude-account — multi-account manager for Claude Code
+
+Usage:
+  claude-account add <name>       Save current ~/.claude.json as <name>
+  claude-account list             List all saved accounts
+  claude-account use <name>       Switch to <name> globally
+  claude-account link [name]      Link current directory to <name>
+  claude-account unlink           Remove directory link for current directory
+  claude-account remove <name>    Delete account <name>
+  claude-account status           Show active account and directory link
+  claude-account help             Show this help
+
+Credentials are stored in ~/.claude-accounts/ and never in your repo.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# dispatch
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+  add)     shift; cmd_add "$@" ;;
+  list)    cmd_list ;;
+  use)     shift; cmd_use "$@" ;;
+  link)    shift; cmd_link "$@" ;;
+  unlink)  cmd_unlink ;;
+  remove)  shift; cmd_remove "$@" ;;
+  status)  cmd_status ;;
+  -h|--help|help|"") usage ;;
+  *) echo "Unknown command: $1"; echo; usage; exit 1 ;;
+esac

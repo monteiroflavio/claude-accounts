@@ -1,22 +1,12 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-.eggs/
-.venv/
-venv/
-env/
+# Never commit credentials or local state
 .env
+*.key
+*.pem
+*.secret
 
-# Pytest / coverage
-.pytest_cache/
-.coverage
-htmlcov/
+# macOS
+.DS_Store
 
-# IDE
+# Editor
 .vscode/
 .idea/
-
-# Credential store (never commit real credentials)
-~/.credential_manager/

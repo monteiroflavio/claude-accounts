@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# claude — wrapper that auto-switches Claude.ai accounts by project directory.
+#
+# Install via install.sh, which renames the original `claude` binary to
+# `claude.real` so this script can call it after switching accounts.
+set -euo pipefail
+
+ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
+ACCOUNTS_DB="$ACCOUNTS_DIR/accounts"
+LINKS_FILE="$ACCOUNTS_DIR/links"
+CURRENT_FILE="$ACCOUNTS_DIR/current"
+CLAUDE_JSON="$HOME/.claude.json"
+
+# ---------------------------------------------------------------------------
+# Find the real claude binary (never this script itself).
+# install.sh renames the original to claude.real; fall back to searching PATH
+# while skipping our own installation directory.
+# ---------------------------------------------------------------------------
+_real_claude() {
+  # Prefer the explicitly backed-up binary
+  local self_dir
+  self_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+  if [[ -x "$self_dir/claude.real" ]]; then
+    echo "$self_dir/claude.real"
+    return
+  fi
+  # Search PATH, skipping our own directory
+  local IFS_ORIG="$IFS"
+  IFS=':'
+  for dir in $PATH; do
+    IFS="$IFS_ORIG"
+    [[ "$dir" == "$self_dir" ]] && continue
+    if [[ -x "$dir/claude" ]]; then
+      echo "$dir/claude"
+      return
+    fi
+  done
+  IFS="$IFS_ORIG"
+  echo "claude-accounts: cannot find the real claude binary" >&2
+  echo "  Is Claude Code installed? Try: npm install -g @anthropic-ai/claude-code" >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Walk from the current directory up to / looking for a directory link.
+# ---------------------------------------------------------------------------
+_find_linked_account() {
+  [[ -f "$LINKS_FILE" ]] || return 0
+  local dir="$PWD"
+  while true; do
+    local match
+    match=$(grep -F "$dir " "$LINKS_FILE" 2>/dev/null \
+            | awk '{print $2}' | head -1 || true)
+    if [[ -n "$match" ]]; then
+      echo "$match"
+      return
+    fi
+    [[ "$dir" == "/" ]] && break
+    dir="$(dirname "$dir")"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Swap ~/.claude.json for a named account's credentials.
+# ---------------------------------------------------------------------------
+_activate_account() {
+  local name="$1"
+  local cred_file="$ACCOUNTS_DB/$name/credentials"
+  if [[ ! -f "$cred_file" ]]; then
+    echo "claude-accounts: account '$name' not found (check: claude-account list)" >&2
+    return 1
+  fi
+  # Persist the currently active account's credentials first
+  local current=""
+  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+  if [[ -n "$current" && -f "$CLAUDE_JSON" && "$current" != "$name" ]]; then
+    mkdir -p "$ACCOUNTS_DB/$current"
+    cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$current/credentials"
+  fi
+  cp "$cred_file" "$CLAUDE_JSON"
+  echo "$name" > "$CURRENT_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+  local linked
+  linked=$(_find_linked_account)
+
+  if [[ -n "$linked" ]]; then
+    local current=""
+    [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+    if [[ "$linked" != "$current" ]]; then
+      _activate_account "$linked"
+    fi
+  fi
+
+  local real_bin
+  real_bin=$(_real_claude)
+  exec "$real_bin" "$@"
+}
+
+main "$@"
