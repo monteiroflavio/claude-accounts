@@ -13,21 +13,56 @@ echo ""
 mkdir -p "$INSTALL_DIR" "$ACCOUNTS_DIR"
 
 # -------------------------------------------------------------------------
-# Locate the real claude binary, skipping our own install dir so a
-# re-run doesn't record our wrapper as "the real claude".
+# Locate the real claude binary.
+# A candidate is valid when it is executable and does NOT contain our
+# wrapper marker, meaning it is the genuine Claude Code binary.
 # -------------------------------------------------------------------------
+_is_real_claude() {
+  local bin="$1"
+  [[ -x "$bin" ]] || return 1
+  ! grep -qI "claude-accounts" "$bin" 2>/dev/null || return 1
+  return 0
+}
+
 _find_real_claude() {
+  local install_abs=""
+  install_abs="$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" || install_abs="$INSTALL_DIR"
+
+  # 1. Search PATH, skipping our install dir
   while IFS=':' read -ra dirs; do
     for dir in "${dirs[@]}"; do
       [[ -z "$dir" ]] && dir="."
-      # Skip our install dir — the wrapper lives there, not the real binary
-      [[ "$(cd "$dir" 2>/dev/null && pwd)" == "$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" ]] && continue
-      if [[ -x "$dir/claude" ]] && ! grep -q "claude-accounts" "$dir/claude" 2>/dev/null; then
-        echo "$dir/claude"
-        return 0
-      fi
+      local abs=""
+      abs="$(cd "$dir" 2>/dev/null && pwd)" || continue
+      [[ "$abs" == "$install_abs" ]] && continue
+      _is_real_claude "$abs/claude" && { echo "$abs/claude"; return 0; }
     done
   done <<< "$PATH"
+
+  # 2. npm global bin directory
+  local npm_bin=""
+  npm_bin="$(npm bin -g 2>/dev/null || npm prefix -g 2>/dev/null | xargs -I{} echo {}/bin)" || true
+  if [[ -n "$npm_bin" ]]; then
+    _is_real_claude "$npm_bin/claude" && { echo "$npm_bin/claude"; return 0; }
+  fi
+
+  # 3. Common fixed locations (macOS / Linux)
+  local candidates=(
+    "/usr/local/bin/claude"
+    "/opt/homebrew/bin/claude"
+    "$HOME/.npm-global/bin/claude"
+    "$HOME/.npm/bin/claude"
+    "/usr/bin/claude"
+  )
+  # Also check nvm-style paths
+  for nvmdir in "$HOME/.nvm/versions/node"/*/bin; do
+    candidates+=("$nvmdir/claude")
+  done
+
+  for c in "${candidates[@]}"; do
+    _is_real_claude "$c" && { echo "$c"; return 0; }
+  done
+
   return 1
 }
 
@@ -38,14 +73,14 @@ if REAL_CLAUDE=$(_find_real_claude); then
   echo "==> Saved real claude path → $REAL_PATH_FILE"
 elif [[ -f "$REAL_PATH_FILE" ]]; then
   REAL_CLAUDE=$(cat "$REAL_PATH_FILE")
-  echo "    (claude not found in PATH; using previously recorded path: $REAL_CLAUDE)"
+  echo "    (using previously recorded path: $REAL_CLAUDE)"
 else
   echo ""
-  echo "WARNING: could not find the real claude binary in PATH."
+  echo "WARNING: could not find the real claude binary."
   echo "  Install Claude Code first:  npm install -g @anthropic-ai/claude-code"
   echo "  Then re-run this installer."
   echo ""
-  echo "  Or set the path manually after installing:"
+  echo "  Or record it manually (run 'which claude' BEFORE sourcing this shell rc):"
   echo "    echo /path/to/real/claude > $REAL_PATH_FILE"
   echo ""
 fi

@@ -46,29 +46,64 @@ _real_claude() {
     _debug "recorded path '$recorded' no longer executable; falling back to PATH search"
   fi
 
-  # 3. PATH search — skip our own directory to avoid calling ourselves
+  # 3. Extended search: PATH (skipping self) + npm global bin + common locations
   local self
   self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
   local self_dir
   self_dir="$(cd "$(dirname "$self")" && pwd)"
 
+  _candidate_ok() {
+    local c="$1"
+    [[ -x "$c" ]] || return 1
+    ! grep -qI "claude-accounts" "$c" 2>/dev/null || return 1
+    return 0
+  }
+
   local found=""
+
+  # 3a. PATH search
   while IFS=':' read -ra dirs; do
     for dir in "${dirs[@]}"; do
       [[ -z "$dir" ]] && dir="."
       local abs_dir
       abs_dir="$(cd "$dir" 2>/dev/null && pwd)" || continue
       [[ "$abs_dir" == "$self_dir" ]] && continue
-      if [[ -x "$abs_dir/claude" ]] && ! grep -q "claude-accounts" "$abs_dir/claude" 2>/dev/null; then
+      if _candidate_ok "$abs_dir/claude"; then
         found="$abs_dir/claude"
         break 2
       fi
     done
   done <<< "$PATH"
 
+  # 3b. npm global bin
+  if [[ -z "$found" ]]; then
+    local npm_bin=""
+    npm_bin="$(npm bin -g 2>/dev/null)" || true
+    if [[ -n "$npm_bin" ]] && _candidate_ok "$npm_bin/claude"; then
+      found="$npm_bin/claude"
+    fi
+  fi
+
+  # 3c. Common fixed locations
+  if [[ -z "$found" ]]; then
+    local c
+    for c in /usr/local/bin/claude /opt/homebrew/bin/claude \
+              "$HOME/.npm-global/bin/claude" "$HOME/.npm/bin/claude" \
+              /usr/bin/claude; do
+      _candidate_ok "$c" && { found="$c"; break; }
+    done
+  fi
+
+  # 3d. nvm-style paths
+  if [[ -z "$found" ]]; then
+    local nvmclaude
+    for nvmclaude in "$HOME/.nvm/versions/node"/*/bin/claude; do
+      _candidate_ok "$nvmclaude" && { found="$nvmclaude"; break; }
+    done
+  fi
+
   if [[ -n "$found" ]]; then
-    _debug "found real claude in PATH: $found"
-    # Cache for next time
+    _debug "found real claude: $found"
     echo "$found" > "$REAL_PATH_FILE" 2>/dev/null || true
     echo "$found"
     return 0
