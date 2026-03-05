@@ -48,43 +48,6 @@ _find_real_claude() {
   return 1
 }
 
-# -------------------------------------------------------------------------
-# Ask the user interactively if auto-discovery fails.
-# -------------------------------------------------------------------------
-_ask_for_real_claude() {
-  # Non-interactive (piped) — cannot prompt
-  if [[ ! -t 0 ]]; then
-    echo ""
-    echo "WARNING: non-interactive shell; cannot prompt for claude path."
-    echo "  Record it manually:"
-    echo "    echo /path/to/claude > $REAL_PATH_FILE"
-    echo ""
-    return 1
-  fi
-
-  echo ""
-  echo "Could not find the claude binary automatically."
-  echo "Please enter the full path to the real claude binary."
-  echo "(Tip: open a NEW terminal tab and run: which claude)"
-  echo ""
-
-  local input=""
-  while true; do
-    printf "  Path to claude: "
-    read -r input
-    input="${input/#\~/$HOME}"   # expand leading ~
-    if _is_real_claude "$input"; then
-      echo "$input"
-      return 0
-    elif [[ -z "$input" ]]; then
-      echo "  (skipped — you can set it later: echo /path/to/claude > $REAL_PATH_FILE)"
-      return 1
-    else
-      echo "  '$input' is not executable or not found. Try again, or press Enter to skip."
-    fi
-  done
-}
-
 REAL_CLAUDE=""
 if REAL_CLAUDE=$(_find_real_claude); then
   echo "==> Found real claude at: $REAL_CLAUDE"
@@ -93,9 +56,15 @@ if REAL_CLAUDE=$(_find_real_claude); then
 elif [[ -f "$REAL_PATH_FILE" ]]; then
   REAL_CLAUDE=$(cat "$REAL_PATH_FILE")
   echo "    (using previously recorded path: $REAL_CLAUDE)"
-elif REAL_CLAUDE=$(_ask_for_real_claude); then
-  echo "$REAL_CLAUDE" > "$REAL_PATH_FILE"
-  echo "==> Saved real claude path → $REAL_PATH_FILE"
+else
+  echo ""
+  echo "WARNING: could not find the real claude binary."
+  echo "  Record it manually, then re-run this installer:"
+  echo ""
+  echo "    echo \"\$(which claude)\" > $REAL_PATH_FILE"
+  echo "    bash $0"
+  echo ""
+  echo "  (Run 'which claude' in a terminal where claude works normally.)"
 fi
 
 # -------------------------------------------------------------------------
