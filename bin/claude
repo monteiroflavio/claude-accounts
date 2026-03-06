@@ -8,6 +8,7 @@ ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
 ACCOUNTS_DB="$ACCOUNTS_DIR/accounts"
 LINKS_FILE="$ACCOUNTS_DIR/links"
 CURRENT_FILE="$ACCOUNTS_DIR/current"
+CURRENT_DIR_FILE="$ACCOUNTS_DIR/current-dir"
 REAL_PATH_FILE="$ACCOUNTS_DIR/real-path"
 CLAUDE_JSON="$HOME/.claude.json"
 
@@ -101,7 +102,7 @@ Resolution order tried:
   3. PATH + common locations     (not found)
 
 To fix:
-  a) Re-run the installer (it will prompt you for the path):
+  a) Re-run the installer (it will auto-discover the path):
        bash /path/to/claude-accounts/install.sh
 
   b) Record the path manually:
@@ -133,11 +134,14 @@ _find_linked_account() {
 }
 
 # ---------------------------------------------------------------------------
-# Swap ~/.claude.json with a named account's saved credentials.
+# Swap ~/.claude.json and keychain with a named account's saved credentials.
+# The hook (claude-accounts-hook) handles per-message keychain swaps for
+# concurrent session isolation; this startup swap ensures the initial token.
 # ---------------------------------------------------------------------------
 _activate_account() {
   local name="$1"
   local cred_file="$ACCOUNTS_DB/$name/credentials"
+  local keychain_file="$ACCOUNTS_DB/$name/keychain"
 
   if [[ ! -f "$cred_file" ]]; then
     echo "claude-accounts: account '$name' is linked here but has no saved credentials." >&2
@@ -145,7 +149,7 @@ _activate_account() {
     return 1
   fi
 
-  # Persist the currently active account's credentials before switching
+  # Persist the currently active account's .claude.json before switching
   local current=""
   [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
   if [[ -n "$current" && "$current" != "$name" && -f "$CLAUDE_JSON" ]]; then
@@ -158,8 +162,19 @@ _activate_account() {
     echo "claude-accounts: failed to write credentials for '$name' to $CLAUDE_JSON" >&2
     return 1
   }
+
+  # Swap keychain to this account's token for the initial session
+  if [[ -f "$keychain_file" ]]; then
+    security add-generic-password \
+      -s "Claude Code-credentials" \
+      -a "$(whoami)" \
+      -w "$(cat "$keychain_file")" \
+      -U 2>/dev/null || true
+  fi
+
   echo "$name" > "$CURRENT_FILE" || true
-  _debug "activated account '$name'"
+  echo "$PWD" > "$CURRENT_DIR_FILE" || true
+  _debug "activated account '$name' (json + keychain) from $PWD"
   return 0
 }
 
@@ -174,9 +189,9 @@ main() {
     local current=""
     [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
     _debug "directory linked to '$linked' (active: '${current:-none}')"
-    if [[ "$linked" != "$current" ]]; then
-      _activate_account "$linked" || true
-    fi
+    # Always activate — even when linked == current, another session's
+    # /login may have overwritten ~/.claude.json with a different account's token.
+    _activate_account "$linked" || true
   fi
 
   local real_bin=""

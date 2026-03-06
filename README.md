@@ -3,6 +3,10 @@
 > Run multiple Claude Code sessions with different Claude.ai accounts,
 > auto-selected by project directory.
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/monteiroflavio/claude-accounts/main/install.sh | bash
+```
+
 ---
 
 ## Features
@@ -11,9 +15,23 @@
   `claude` wrapper picks it up automatically before each run.
 - **Instant switching** – `claude-account use <name>` swaps credentials
   globally in one command.
+- **Concurrent session isolation** – per-message keychain swapping via a
+  UserPromptSubmit hook ensures multiple Claude Code sessions with different
+  accounts work simultaneously.
+- **Auto-save on exit** – a SessionEnd hook automatically persists refreshed
+  OAuth tokens back to the linked account's storage, so you never have to
+  manually re-run `claude-account add` after `/login`.
 - **Zero dependencies** – pure Bash, works wherever `claude` runs.
 - **Safe storage** – credentials live in `~/.claude-accounts/`, never
   committed to your repository.
+
+---
+
+## Requirements
+
+- Bash 4.0+
+- macOS (for keychain-based credential isolation)
+- `python3` (install script only — used to update `settings.json`)
 
 ---
 
@@ -39,16 +57,17 @@ source ~/.zshrc    # zsh
 Clone the repository and run the installer locally:
 
 ```bash
-# requires git
 git clone https://github.com/monteiroflavio/claude-accounts.git
 cd claude-accounts
-chmod +x install.sh bin/claude bin/claude-account
+chmod +x install.sh bin/claude bin/claude-account bin/claude-accounts-hook bin/claude-accounts-session-end
 ./install.sh
 ```
 
-> **Note:** `install.sh` copies `bin/claude` and `bin/claude-account` into
-> `~/.local/bin/`, renames any pre-existing `claude` binary to `claude.real`,
-> and prints reload instructions.
+> **Note:** `install.sh` copies the wrapper scripts into
+> `~/.claude-accounts/bin/`, records the real claude binary path in
+> `~/.claude-accounts/real-path`, and configures UserPromptSubmit and
+> SessionEnd hooks in `~/.claude/settings.json` for session isolation
+> and auto-save.
 
 ---
 
@@ -88,6 +107,8 @@ claude
 | `claude-account unlink` | Remove the link for the current directory |
 | `claude-account remove <name>` | Delete account `<name>` |
 | `claude-account status` | Show active account and directory link |
+| `claude-account doctor [--fix]` | Check installation and auto-repair common issues |
+| `claude-account help` | Show usage information |
 
 ---
 
@@ -95,26 +116,67 @@ claude
 
 ```
 ~/.claude-accounts/
+  bin/
+    claude               ← wrapper script
+    claude-account       ← management CLI
+    claude-accounts-hook        ← session isolation hook
+    claude-accounts-session-end ← auto-save on exit hook
   accounts/
     personal/
-      credentials      ← copy of ~/.claude.json for this account
+      credentials        ← copy of ~/.claude.json
+      keychain           ← saved OAuth token (macOS)
     work/
       credentials
-  current              ← name of the currently active account
-  links                ← directory → account mappings
+      keychain
+  current                ← name of the currently active account
+  current-dir            ← directory where last account was activated
+  links                  ← directory → account mappings
+  real-path              ← path to the real claude binary
 ```
 
 When you run `claude` inside a linked directory (or any subdirectory),
-the wrapper automatically swaps `~/.claude.json` with the linked
-account's credentials before passing all arguments to the real `claude`
-binary (`claude.real`).
+the wrapper automatically swaps `~/.claude.json` and the macOS Keychain
+credential with the linked account's saved copies, then passes all
+arguments to the real `claude` binary.
+
+For concurrent sessions, the `claude-accounts-hook` runs before every
+message (via the UserPromptSubmit hook) and re-injects the correct
+account's keychain token. This ensures two sessions using different
+accounts don't stomp on each other's credentials.
+
+---
+
+## Environment variables
+
+| Variable | Description |
+|---|---|
+| `CLAUDE_ACCOUNTS_DEBUG=1` | Trace wrapper decisions to stderr |
+| `CLAUDE_REAL=/path/to/claude` | Override real claude binary path |
+| `CLAUDE_ACCOUNTS_DIR=...` | Custom storage directory (default: `~/.claude-accounts`) |
+
+---
+
+## Troubleshooting
+
+Run the built-in diagnostic:
+
+```bash
+claude-account doctor
+```
+
+To auto-repair common issues (missing hook, stale real-path, etc.):
+
+```bash
+claude-account doctor --fix
+```
 
 ---
 
 ## Uninstall
 
 ```bash
-rm ~/.local/bin/claude ~/.local/bin/claude-account
-# Restore original claude binary if backed up:
-mv ~/.local/bin/claude.real ~/.local/bin/claude
+rm -rf ~/.claude-accounts/bin
+# Remove PATH entry from ~/.zshrc or ~/.bashrc
+# Remove hook from ~/.claude/settings.json
+# Optionally remove all data: rm -rf ~/.claude-accounts
 ```

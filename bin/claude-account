@@ -16,6 +16,15 @@ _ensure_dirs() {
 # ---------------------------------------------------------------------------
 # add <name>
 # ---------------------------------------------------------------------------
+_keychain_save() {
+  local dest="$1"
+  local data
+  data=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || true
+  if [[ -n "$data" ]]; then
+    echo "$data" > "$dest"
+  fi
+}
+
 cmd_add() {
   local name="${1:-}"
   [[ -z "$name" ]] && { echo "Usage: claude-account add <name>"; exit 1; }
@@ -26,6 +35,7 @@ cmd_add() {
   _ensure_dirs
   mkdir -p "$ACCOUNTS_DB/$name"
   cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$name/credentials"
+  _keychain_save "$ACCOUNTS_DB/$name/keychain"
   echo "$name" > "$CURRENT_FILE"
   echo "Saved current credentials as account '$name'."
 }
@@ -69,8 +79,18 @@ cmd_use() {
   if [[ -n "$current" && -f "$CLAUDE_JSON" && "$current" != "$name" ]]; then
     mkdir -p "$ACCOUNTS_DB/$current"
     cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$current/credentials"
+    _keychain_save "$ACCOUNTS_DB/$current/keychain"
   fi
   cp "$cred_file" "$CLAUDE_JSON"
+  # Swap keychain to the new account's token
+  local keychain_file="$ACCOUNTS_DB/$name/keychain"
+  if [[ -f "$keychain_file" ]]; then
+    security add-generic-password \
+      -s "Claude Code-credentials" \
+      -a "$(whoami)" \
+      -w "$(cat "$keychain_file")" \
+      -U 2>/dev/null || true
+  fi
   echo "$name" > "$CURRENT_FILE"
   echo "Switched to account '$name'."
 }
@@ -151,11 +171,36 @@ cmd_status() {
   _ensure_dirs
   local current=""
   [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE")
+  local current_dir=""
+  [[ -f "$ACCOUNTS_DIR/current-dir" ]] && current_dir=$(cat "$ACCOUNTS_DIR/current-dir")
   if [[ -n "$current" ]]; then
     echo "Active account : $current"
+    [[ -n "$current_dir" ]] && echo "Activated from : $current_dir"
   else
     echo "Active account : (none)"
   fi
+
+  # Show which account's token is currently in the keychain
+  local keychain_token=""
+  keychain_token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || true
+  if [[ -n "$keychain_token" ]]; then
+    local keychain_account="(unknown)"
+    for d in "$ACCOUNTS_DB"/*/; do
+      [[ -d "$d" ]] || continue
+      local kf="$d/keychain"
+      [[ -f "$kf" ]] || continue
+      local saved
+      saved=$(cat "$kf")
+      if [[ "$saved" == "$keychain_token" ]]; then
+        keychain_account=$(basename "$d")
+        break
+      fi
+    done
+    echo "Keychain token : $keychain_account"
+  else
+    echo "Keychain token : (none)"
+  fi
+
   if [[ -f "$LINKS_FILE" ]]; then
     local linked
     linked=$(grep -F "$PWD " "$LINKS_FILE" 2>/dev/null | awk '{print $2}' | head -1 || true)
@@ -164,6 +209,14 @@ cmd_status() {
     else
       echo "Directory link : (none for $PWD)"
     fi
+  fi
+
+  # Show hook status
+  local settings_file="$HOME/.claude/settings.json"
+  if [[ -f "$settings_file" ]] && grep -q "claude-accounts-hook" "$settings_file" 2>/dev/null; then
+    echo "Session hook    : installed"
+  else
+    echo "Session hook    : not installed (run install.sh)"
   fi
 }
 
@@ -249,7 +302,7 @@ cmd_doctor() {
     wrapper_dir="$(cd "$(dirname "$wrapper")" && pwd)"
   else
     echo "WARN  '$wrapper' is not the claude-accounts wrapper"
-    echo "      Make sure ~/.local/bin comes before other PATH entries"
+    echo "      Make sure ~/.claude-accounts/bin comes before other PATH entries"
     ok=false
   fi
 
@@ -304,6 +357,65 @@ cmd_doctor() {
   local links=0
   [[ -f "$LINKS_FILE" ]] && links=$(grep -c . "$LINKS_FILE" 2>/dev/null || true)
   echo "OK    directory links: $links"
+
+  # 6. UserPromptSubmit hook
+  local settings_file="$HOME/.claude/settings.json"
+  if [[ -f "$settings_file" ]] && grep -q "claude-accounts-hook" "$settings_file" 2>/dev/null; then
+    echo "OK    session hook:  configured in $settings_file"
+  else
+    echo "FAIL  UserPromptSubmit hook not configured"
+    echo "      Re-run install.sh to add the hook, or add it manually to $settings_file"
+    ok=false
+  fi
+
+  # 7. Hook script exists and is executable
+  local hook_bin="$ACCOUNTS_DIR/bin/claude-accounts-hook"
+  if [[ -x "$hook_bin" ]]; then
+    echo "OK    hook script:   $hook_bin"
+  else
+    echo "FAIL  hook script not found or not executable: $hook_bin"
+    echo "      Re-run install.sh"
+    ok=false
+  fi
+
+  # 8. SessionEnd hook
+  if [[ -f "$settings_file" ]] && grep -q "claude-accounts-session-end" "$settings_file" 2>/dev/null; then
+    echo "OK    session-end:   configured in $settings_file"
+  else
+    echo "FAIL  SessionEnd hook not configured"
+    ok=false
+    if $fix_mode; then
+      local se_cmd="$ACCOUNTS_DIR/bin/claude-accounts-session-end"
+      if [[ -f "$settings_file" ]]; then
+        python3 -c "
+import json
+with open('$settings_file') as f:
+    s = json.load(f)
+hooks = s.setdefault('hooks', {})
+se = hooks.setdefault('SessionEnd', [])
+se.append({'matcher': '*', 'hooks': [{'type': 'command', 'command': '$se_cmd'}]})
+with open('$settings_file', 'w') as f:
+    json.dump(s, f, indent=2)
+    f.write('\n')
+" && echo "FIX   added SessionEnd hook to $settings_file" \
+      || echo "WARN  could not update $settings_file"
+      else
+        echo "      Re-run install.sh to add the hook"
+      fi
+    else
+      echo "      Re-run install.sh or run: claude-account doctor --fix"
+    fi
+  fi
+
+  # 9. Session-end script exists and is executable
+  local se_bin="$ACCOUNTS_DIR/bin/claude-accounts-session-end"
+  if [[ -x "$se_bin" ]]; then
+    echo "OK    session-end:   $se_bin"
+  else
+    echo "FAIL  session-end script not found or not executable: $se_bin"
+    echo "      Re-run install.sh"
+    ok=false
+  fi
 
   echo ""
   if $ok; then

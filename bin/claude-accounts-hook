@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# claude-accounts-hook — UserPromptSubmit hook
+# Ensures the macOS Keychain has the correct account's OAuth token
+# before Claude processes each message. This enables per-session
+# credential isolation for concurrent Claude Code sessions.
+
+ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
+LINKS_FILE="$ACCOUNTS_DIR/links"
+CURRENT_FILE="$ACCOUNTS_DIR/current"
+LOCKDIR="$ACCOUNTS_DIR/.lock"
+
+# Determine project directory from hook env
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+
+# Walk up from PROJECT_DIR to find a linked account
+linked=""
+if [[ -f "$LINKS_FILE" ]]; then
+  dir="$PROJECT_DIR"
+  while true; do
+    match=$(grep -F "$dir " "$LINKS_FILE" 2>/dev/null | awk '{print $2}' | head -1)
+    [[ -n "$match" ]] && { linked="$match"; break; }
+    [[ "$dir" == "/" ]] && break
+    dir="$(dirname "$dir")"
+  done
+fi
+
+[[ -z "$linked" ]] && exit 0
+
+# Keychain file for the linked account
+keychain_file="$ACCOUNTS_DIR/accounts/$linked/keychain"
+[[ -f "$keychain_file" ]] || exit 0
+
+# Acquire filesystem lock, swap keychain, release
+_lock()   { while ! mkdir "$LOCKDIR" 2>/dev/null; do sleep 0.05; done; }
+_unlock() { rmdir "$LOCKDIR" 2>/dev/null || true; }
+trap _unlock EXIT
+
+_lock
+security add-generic-password \
+  -s "Claude Code-credentials" \
+  -a "$(whoami)" \
+  -w "$(cat "$keychain_file")" \
+  -U 2>/dev/null || true
+echo "$linked" > "$CURRENT_FILE" 2>/dev/null || true
+_unlock
