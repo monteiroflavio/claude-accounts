@@ -13,7 +13,7 @@
 CLAUDE_ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
 CLAUDE_ACCOUNTS_RC="${CLAUDE_ACCOUNTS_RC:-$HOME/.claude-accountsrc}"
 # Companion cache, keyed by email like the rc file, holding each account's
-# organization name — not part of the Keychain credential blob, so it can't
+# organization name — not part of the credential blob, so it can't
 # live inside ~/.claude-accountsrc's email:credentialBlob format. Populated
 # opportunistically whenever we observe live auth state (see _live_org).
 CLAUDE_ACCOUNTS_ORG_CACHE="${CLAUDE_ACCOUNTS_ORG_CACHE:-$CLAUDE_ACCOUNTS_DIR/org-cache}"
@@ -25,7 +25,7 @@ _debug() {
 }
 
 # ---------------------------------------------------------------------------
-# Filesystem lock around rc-file / Keychain writes, so the hook and the
+# Filesystem lock around rc-file / credential-store writes, so the hook and the
 # session-end script don't race each other across concurrent sessions.
 # ---------------------------------------------------------------------------
 _lock() {
@@ -180,21 +180,76 @@ _live_org() {
 }
 
 # ---------------------------------------------------------------------------
-# Keychain access (macOS only; no-ops elsewhere).
+# Credential storage: where the real `claude` binary actually reads its
+# bearer token from, per OS.
+#   macOS  — the system Keychain, service "Claude Code-credentials"
+#            (verified directly against a real login on this codebase's
+#            original development machine).
+#   Linux  — a plain file, $CLAUDE_CONFIG_DIR/.credentials.json (falling
+#            back to ~/.claude/.credentials.json when that env var is
+#            unset), mode 600. NOT independently verified against a real
+#            Linux `claude login` — based on public reports only. If your
+#            install's file lives somewhere else or the content doesn't
+#            round-trip cleanly, run with CLAUDE_ACCOUNTS_DEBUG=1 and
+#            check the trace this prints on read.
+# Any other OS: both functions are silent no-ops (write) / failures
+# (read), same as today's behavior when `security` was simply absent.
 # ---------------------------------------------------------------------------
-_keychain_write() {
-  local blob="$1"
-  command -v security >/dev/null 2>&1 || return 0
-  security add-generic-password \
-    -s "Claude Code-credentials" \
-    -a "$(whoami)" \
-    -w "$blob" \
-    -U 2>/dev/null || true
+_os() { uname -s 2>/dev/null; }
+
+_linux_credentials_file() {
+  echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
 }
 
-_keychain_read() {
-  command -v security >/dev/null 2>&1 || return 1
-  security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null
+_credential_write() {
+  local blob="$1"
+  case "$(_os)" in
+    Darwin)
+      command -v security >/dev/null 2>&1 || return 0
+      security add-generic-password \
+        -s "Claude Code-credentials" \
+        -a "$(whoami)" \
+        -w "$blob" \
+        -U 2>/dev/null || true
+      ;;
+    Linux)
+      local cred_file
+      cred_file=$(_linux_credentials_file)
+      mkdir -p "$(dirname "$cred_file")" 2>/dev/null || true
+      printf '%s' "$blob" > "$cred_file" 2>/dev/null || return 0
+      chmod 600 "$cred_file" 2>/dev/null || true
+      ;;
+    *)
+      _debug "credential storage not implemented for OS '$(_os)'; no-op"
+      ;;
+  esac
+}
+
+_credential_read() {
+  case "$(_os)" in
+    Darwin)
+      command -v security >/dev/null 2>&1 || return 1
+      security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null
+      ;;
+    Linux)
+      local cred_file content
+      cred_file=$(_linux_credentials_file)
+      [[ -f "$cred_file" ]] || return 1
+      # Compact to a single line: our rc/org-cache files are one-entry-per-
+      # line, but nothing guarantees Claude Code writes this file compact.
+      # Safe to strip raw newlines/tabs unconditionally — valid JSON can't
+      # contain either as a literal (unescaped) byte inside a string, so
+      # this only ever removes formatting whitespace between tokens, never
+      # touches actual field content.
+      content=$(tr -d '\n\t' < "$cred_file" 2>/dev/null) || return 1
+      [[ -n "$content" ]] || return 1
+      _debug "read $cred_file (${#content} chars, has refreshTokenExpiresAt: $([[ "$content" == *refreshTokenExpiresAt* ]] && echo yes || echo no))"
+      echo "$content"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------

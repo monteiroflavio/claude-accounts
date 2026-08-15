@@ -184,7 +184,7 @@ if [[ -f "$CLAUDE_SETTINGS" ]]; then
   if grep -q "claude-accounts-hook" "$CLAUDE_SETTINGS" 2>/dev/null; then
     echo "    (UserPromptSubmit hook already configured in $CLAUDE_SETTINGS)"
   else
-    # Merge hook into existing settings using python (available on macOS)
+    # Merge hook into existing settings using python3
     python3 -c "
 import json, sys
 with open('$CLAUDE_SETTINGS') as f:
