@@ -161,7 +161,13 @@ SessionEnd run picks up the refreshed token automatically.
 ## Uninstall
 
 ```bash
-rm -rf ~/.claude-accounts ~/.claude-accountsrc
-# Remove PATH entry from ~/.zshrc or ~/.bashrc
-# Remove the hooks from ~/.claude/settings.json
+curl -fsSL https://raw.githubusercontent.com/monteiroflavio/claude-accounts/main/uninstall.sh | bash
 ```
+
+Or, from a local clone: `./uninstall.sh`.
+
+It removes `~/.claude-accounts` and `~/.claude-accountsrc`, strips the PATH
+entry from your shell rc file, and removes just the `claude-accounts-hook`
+and `claude-accounts-session-end` entries from
+`~/.claude/settings.json` — any other hooks or settings you have are left
+untouched. Safe to run more than once.
