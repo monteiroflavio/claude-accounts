@@ -12,8 +12,8 @@
 #      just did in this same session — a session's messages only ever use
 #      its assigned account. Point .claude-accounts at the new account
 #      yourself if you want it used here.
-#   3. Report which account is actually active via the hook's
-#      systemMessage field, so the CLI's own (often stale) identity
+#   3. Report which account (and organization) is actually active via the
+#      hook's systemMessage field, so the CLI's own (often stale) identity
 #      display isn't the only signal — this is a UI-level notice, not
 #      conversation context, so it doesn't cost tokens or clutter the
 #      transcript on every turn.
@@ -36,6 +36,13 @@ if [[ -n "$live_email" ]]; then
     _unlock
     _debug "saved currently authenticated account '$live_email'"
   fi
+
+  live_org=$(_live_org) || true
+  if [[ -n "$live_org" ]]; then
+    _lock
+    _org_upsert "$live_email" "$live_org"
+    _unlock
+  fi
 fi
 
 # --- 2 & 3. Force this project's resolved account back into Keychain, --
@@ -56,4 +63,9 @@ _lock
 _keychain_write "$blob"
 _unlock
 
-_emit_system_message "claude-accounts: using $email"
+org=$(_org_lookup "$email") || true
+if [[ -n "$org" ]]; then
+  _emit_system_message "claude-accounts: using $email ($org)"
+else
+  _emit_system_message "claude-accounts: using $email"
+fi
