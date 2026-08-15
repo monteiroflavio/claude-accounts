@@ -12,6 +12,11 @@
 
 CLAUDE_ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
 CLAUDE_ACCOUNTS_RC="${CLAUDE_ACCOUNTS_RC:-$HOME/.claude-accountsrc}"
+# Companion cache, keyed by email like the rc file, holding each account's
+# organization name — not part of the Keychain credential blob, so it can't
+# live inside ~/.claude-accountsrc's email:credentialBlob format. Populated
+# opportunistically whenever we observe live auth state (see _live_org).
+CLAUDE_ACCOUNTS_ORG_CACHE="${CLAUDE_ACCOUNTS_ORG_CACHE:-$CLAUDE_ACCOUNTS_DIR/org-cache}"
 _LOCKDIR="$CLAUDE_ACCOUNTS_DIR/.lock"
 
 # Set CLAUDE_ACCOUNTS_DEBUG=1 to trace decisions to stderr.
@@ -76,41 +81,56 @@ _resolve_email() {
 }
 
 # ---------------------------------------------------------------------------
-# Look up the saved credential blob for email $1 in the rc file.
+# Generic "email:value" flat-file store, shared by the rc file and the org
+# name cache. Values must not contain a literal newline; the rc file's
+# credential blobs are single-line JSON, which satisfies that.
 # ---------------------------------------------------------------------------
-_lookup_blob() {
-  local email="$1" line
-  [[ -f "$CLAUDE_ACCOUNTS_RC" ]] || return 1
+_kv_lookup() {
+  local file="$1" key="$2" line
+  [[ -f "$file" ]] || return 1
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    if [[ "${line%%:*}" == "$email" ]]; then
+    if [[ "${line%%:*}" == "$key" ]]; then
       echo "${line#*:}"
       return 0
     fi
-  done < "$CLAUDE_ACCOUNTS_RC"
+  done < "$file"
   return 1
 }
 
-# ---------------------------------------------------------------------------
-# Add or replace the rc line for email $1 with blob $2.
-# ---------------------------------------------------------------------------
-_rc_upsert() {
-  local email="$1" blob="$2" line found=false tmp
-  mkdir -p "$(dirname "$CLAUDE_ACCOUNTS_RC")" 2>/dev/null || true
-  touch "$CLAUDE_ACCOUNTS_RC"
+_kv_upsert() {
+  local file="$1" key="$2" value="$3" line found=false tmp
+  mkdir -p "$(dirname "$file")" 2>/dev/null || true
+  touch "$file"
   tmp=$(mktemp)
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    if [[ "${line%%:*}" == "$email" ]]; then
-      echo "$email:$blob" >> "$tmp"
+    if [[ "${line%%:*}" == "$key" ]]; then
+      echo "$key:$value" >> "$tmp"
       found=true
     else
       echo "$line" >> "$tmp"
     fi
-  done < "$CLAUDE_ACCOUNTS_RC"
-  $found || echo "$email:$blob" >> "$tmp"
-  mv "$tmp" "$CLAUDE_ACCOUNTS_RC"
+  done < "$file"
+  $found || echo "$key:$value" >> "$tmp"
+  mv "$tmp" "$file"
 }
+
+# ---------------------------------------------------------------------------
+# Look up the saved credential blob for email $1 in the rc file.
+# ---------------------------------------------------------------------------
+_lookup_blob() { _kv_lookup "$CLAUDE_ACCOUNTS_RC" "$1"; }
+
+# ---------------------------------------------------------------------------
+# Add or replace the rc line for email $1 with blob $2.
+# ---------------------------------------------------------------------------
+_rc_upsert() { _kv_upsert "$CLAUDE_ACCOUNTS_RC" "$1" "$2"; }
+
+# ---------------------------------------------------------------------------
+# Look up / save the cached organization name for email $1.
+# ---------------------------------------------------------------------------
+_org_lookup() { _kv_lookup "$CLAUDE_ACCOUNTS_ORG_CACHE" "$1"; }
+_org_upsert() { _kv_upsert "$CLAUDE_ACCOUNTS_ORG_CACHE" "$1" "$2"; }
 
 # ---------------------------------------------------------------------------
 # Extract a numeric JSON field (e.g. refreshTokenExpiresAt) from blob $1.
@@ -147,6 +167,19 @@ _live_email() {
 }
 
 # ---------------------------------------------------------------------------
+# Currently authenticated organization name: oauthAccount.organizationName
+# from ~/.claude.json. Same extraction approach as _live_email.
+# ---------------------------------------------------------------------------
+_live_org() {
+  local claude_json="$HOME/.claude.json" org
+  [[ -f "$claude_json" ]] || return 1
+  org=$(grep -o '"organizationName"[^,}]*' "$claude_json" 2>/dev/null | head -1 \
+    | sed -E 's/.*"organizationName"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+  [[ -n "$org" ]] || return 1
+  echo "$org"
+}
+
+# ---------------------------------------------------------------------------
 # Keychain access (macOS only; no-ops elsewhere).
 # ---------------------------------------------------------------------------
 _keychain_write() {
@@ -162,4 +195,16 @@ _keychain_write() {
 _keychain_read() {
   command -v security >/dev/null 2>&1 || return 1
   security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Emit a UserPromptSubmit hook JSON payload with a systemMessage: shown to
+# the user as a UI-level notice, not added to the conversation Claude sees
+# (unlike plain stdout/additionalContext, it doesn't repeat on every turn's
+# token count). No jq dependency — the payload is a single flat string field.
+# ---------------------------------------------------------------------------
+_emit_system_message() {
+  local msg="$1" escaped
+  escaped=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '{"systemMessage":"%s"}\n' "$escaped"
 }

@@ -116,6 +116,8 @@ you log in and send a message (or exit, if you don't send one).
 
 ~/.claude-accountsrc            ← one "email:credentialBlob" per line
                                    (first line = default account)
+~/.claude-accounts/org-cache    ← one "email:organizationName" per line
+                                   (cached opportunistically, not required)
 
 <project>/.claude-accounts      ← one line: the email to use here
 ```
@@ -128,12 +130,16 @@ writes it into the macOS Keychain before handing off to the real `claude`
 binary.
 
 `claude-accounts-hook` runs before every message (via the UserPromptSubmit
-hook) and does two things, in order:
+hook) and does three things, in order:
 
 1. Saves whichever account you're currently logged in as (from
    `~/.claude.json`) and the current Keychain token into
    `~/.claude-accountsrc` — this is how accounts get added or refreshed,
-   immediately, without any separate "save" step.
+   immediately, without any separate "save" step. Its organization name
+   (also from `~/.claude.json`) is cached alongside it in
+   `~/.claude-accounts/org-cache`, keyed by email — a separate file, since
+   it isn't part of the Keychain credential blob and doesn't belong in the
+   rc file's `email:credentialBlob` format.
 2. Forces the Keychain back to this project's resolved account (its
    `.claude-accounts` file, or the default). This always wins — even over a
    `/login` you just did in this same session. A session's messages only
@@ -141,6 +147,26 @@ hook) and does two things, in order:
    account yourself if you want it used here. This is what keeps
    concurrent sessions using different accounts from stomping on each
    other.
+3. Reports which account (and organization, if cached) is actually active
+   via a `systemMessage` — e.g. `claude-accounts: using bob@example.com
+   (Acme Inc)` — a UI-level notice, shown to you but not fed into the
+   conversation Claude sees, so it doesn't cost tokens or repeat in the
+   transcript every turn. Useful because the CLI's own status display can
+   lag: it caches the account identity in `~/.claude.json` at `/login`
+   time and doesn't re-derive it from the live Keychain token, so it can
+   visibly disagree with which account a message actually used — the
+   `systemMessage` is the ground truth. You'll also see a warning here if
+   the resolved account has no saved credentials yet, or if its refresh
+   token has expired. The organization name is only shown once it's been
+   observed live at least once (via this hook or SessionEnd) for that
+   account — it's not guessable from the credential blob alone.
+
+   Token-consumption numbers (5-hour and weekly usage) aren't part of this
+   `systemMessage` — Claude Code already exposes them natively to a
+   status line script via `rate_limits.five_hour.used_percentage` and
+   `rate_limits.seven_day.used_percentage` in the JSON it pipes to
+   `statusLine.command` (see Claude Code's own status line docs), so
+   there's no need to fetch or duplicate them here.
 
 `claude-accounts-session-end` runs when a session exits (SessionEnd hook)
 and does the same save as step 1 above — it's just a backstop for

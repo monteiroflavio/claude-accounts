@@ -32,6 +32,69 @@ appeared after exiting). That lag is a bad experience, so:
   startup cost on the hot path. `python3` remains a dependency only for
   `install.sh`/`uninstall.sh` (editing `settings.json`).
 
+## Revision 2 (same day): surfacing which account is actually active
+
+The CLI's own status display was confirmed (empirically, by comparing
+per-account usage pages after a large test prompt) to authenticate
+correctly against the Keychain-forced account, while still visually
+*displaying* the account you last `/login`'d as. That's because the CLI
+caches identity (email, org UUID, etc.) in `~/.claude.json`'s
+`oauthAccount` block at `/login` time and doesn't re-derive it from the
+live Keychain token — a field our hook never touches (and deliberately
+won't: it's a large, actively-mutated state file the running `claude`
+process itself reads/writes, so an external read-modify-write from a
+hook risks a race/corruption for a cosmetic fix, with no guarantee the
+running process would even notice the change).
+
+Instead, `claude-accounts-hook` now reports the actual resolved account
+via the `UserPromptSubmit` hook's `systemMessage` JSON field — a
+supported Claude Code mechanism for a UI-level notice shown to the user
+without being added to the conversation Claude sees (unlike plain
+stdout/`additionalContext` on this hook event, which *is* added to the
+model's context and would repeat its token cost on every turn). Built
+with a small `_emit_system_message()` lib helper (manual JSON string
+escaping, no `jq`/`python3` dependency on the hot path) rather than a
+templating library, since the payload is one flat string field.
+
+The hook now emits one of three messages per run: the active account
+(`claude-accounts: using <email>`), a warning if the resolved account
+has no saved credentials yet, or a warning if its refresh token has
+expired — surfacing the same three states the wrapper already handles
+at startup, but on every message of an already-running session too.
+
+## Revision 3 (same day): organization name, and where usage numbers belong
+
+Asked to also surface organization name and 5-hour/weekly usage
+percentages. Split these, since their feasibility is very different:
+
+- **Organization name**: cached in `~/.claude.json`'s
+  `oauthAccount.organizationName`, same place as the email, extracted the
+  same way (`_live_org()`, mirroring `_live_email()`). It isn't part of
+  the Keychain credential blob, so it can't live inside
+  `~/.claude-accountsrc`'s `email:credentialBlob` lines — added a second
+  flat file, `~/.claude-accounts/org-cache` (`email:organizationName`),
+  built on a new generic `_kv_lookup`/`_kv_upsert` pair that `_lookup_blob`
+  /`_rc_upsert` were refactored to call too. Populated opportunistically
+  by the same "live save" step that already captures the current email +
+  blob (both the hook and SessionEnd), so an account's org name is known
+  once it's been observed live at least once; the `systemMessage` falls
+  back to plain `using <email>` (no parens) until then, rather than
+  showing something wrong.
+
+- **5-hour/weekly usage**: turned out not to need any new code at all.
+  Claude Code already sends `rate_limits.five_hour.used_percentage` and
+  `rate_limits.seven_day.used_percentage` natively to a status line
+  script via the JSON it pipes to `statusLine.command` (confirmed from
+  Claude Code's own docs) — computed by the running process from its own
+  live API traffic, the same channel already confirmed (via the earlier
+  usage-page test) to follow the Keychain-forced account rather than the
+  stale `~/.claude.json` login cache. Duplicating that in
+  `claude-accounts-hook` via a private/undocumented API call would have
+  meant real hot-path latency and a maintenance liability for something
+  the platform already provides for free. Decision: leave usage numbers
+  to the status line, keep `claude-accounts-hook` focused on account
+  resolution + identity reporting.
+
 ## Summary
 
 Replace the current `~/.claude-accounts/accounts/<name>/{credentials,keychain}` +
