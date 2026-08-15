@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claude-accounts-hook — UserPromptSubmit hook
 #
-# Runs on every message. Two jobs, in order:
+# Runs on every message. Three jobs, in order:
 #   1. Save whatever account is currently authenticated into
 #      ~/.claude-accountsrc immediately — so a mid-session /login is
 #      registered on your very next message, without waiting for the
@@ -12,6 +12,11 @@
 #      just did in this same session — a session's messages only ever use
 #      its assigned account. Point .claude-accounts at the new account
 #      yourself if you want it used here.
+#   3. Report which account is actually active via the hook's
+#      systemMessage field, so the CLI's own (often stale) identity
+#      display isn't the only signal — this is a UI-level notice, not
+#      conversation context, so it doesn't cost tokens or clutter the
+#      transcript on every turn.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./claude-accounts-lib.sh
@@ -33,14 +38,22 @@ if [[ -n "$live_email" ]]; then
   fi
 fi
 
-# --- 2. Force this project's resolved account back into Keychain -------
+# --- 2 & 3. Force this project's resolved account back into Keychain, --
+#            and report which account is active.
 email=$(_resolve_email "$PROJECT_DIR") || exit 0
-blob=$(_lookup_blob "$email") || exit 0
 
-# An expired refresh token can't be silently fixed mid-session; leave the
-# running session's own state alone rather than injecting a dead token.
-_blob_expired "$blob" && exit 0
+blob=$(_lookup_blob "$email") || {
+  _emit_system_message "claude-accounts: no saved credentials for '$email' yet"
+  exit 0
+}
+
+if _blob_expired "$blob"; then
+  _emit_system_message "claude-accounts: '$email' has expired — run 'claude' and /login again."
+  exit 0
+fi
 
 _lock
 _keychain_write "$blob"
 _unlock
+
+_emit_system_message "claude-accounts: using $email"

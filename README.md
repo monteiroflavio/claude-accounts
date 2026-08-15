@@ -128,7 +128,7 @@ writes it into the macOS Keychain before handing off to the real `claude`
 binary.
 
 `claude-accounts-hook` runs before every message (via the UserPromptSubmit
-hook) and does two things, in order:
+hook) and does three things, in order:
 
 1. Saves whichever account you're currently logged in as (from
    `~/.claude.json`) and the current Keychain token into
@@ -141,6 +141,15 @@ hook) and does two things, in order:
    account yourself if you want it used here. This is what keeps
    concurrent sessions using different accounts from stomping on each
    other.
+3. Reports which account is actually active via a `systemMessage` — a
+   UI-level notice, shown to you but not fed into the conversation Claude
+   sees, so it doesn't cost tokens or repeat in the transcript every turn.
+   Useful because the CLI's own status display can lag: it caches the
+   account identity in `~/.claude.json` at `/login` time and doesn't
+   re-derive it from the live Keychain token, so it can visibly disagree
+   with which account a message actually used — the `systemMessage` is the
+   ground truth. You'll also see a warning here if the resolved account
+   has no saved credentials yet, or if its refresh token has expired.
 
 `claude-accounts-session-end` runs when a session exits (SessionEnd hook)
 and does the same save as step 1 above — it's just a backstop for

@@ -32,6 +32,36 @@ appeared after exiting). That lag is a bad experience, so:
   startup cost on the hot path. `python3` remains a dependency only for
   `install.sh`/`uninstall.sh` (editing `settings.json`).
 
+## Revision 2 (same day): surfacing which account is actually active
+
+The CLI's own status display was confirmed (empirically, by comparing
+per-account usage pages after a large test prompt) to authenticate
+correctly against the Keychain-forced account, while still visually
+*displaying* the account you last `/login`'d as. That's because the CLI
+caches identity (email, org UUID, etc.) in `~/.claude.json`'s
+`oauthAccount` block at `/login` time and doesn't re-derive it from the
+live Keychain token — a field our hook never touches (and deliberately
+won't: it's a large, actively-mutated state file the running `claude`
+process itself reads/writes, so an external read-modify-write from a
+hook risks a race/corruption for a cosmetic fix, with no guarantee the
+running process would even notice the change).
+
+Instead, `claude-accounts-hook` now reports the actual resolved account
+via the `UserPromptSubmit` hook's `systemMessage` JSON field — a
+supported Claude Code mechanism for a UI-level notice shown to the user
+without being added to the conversation Claude sees (unlike plain
+stdout/`additionalContext` on this hook event, which *is* added to the
+model's context and would repeat its token cost on every turn). Built
+with a small `_emit_system_message()` lib helper (manual JSON string
+escaping, no `jq`/`python3` dependency on the hot path) rather than a
+templating library, since the payload is one flat string field.
+
+The hook now emits one of three messages per run: the active account
+(`claude-accounts: using <email>`), a warning if the resolved account
+has no saved credentials yet, or a warning if its refresh token has
+expired — surfacing the same three states the wrapper already handles
+at startup, but on every message of an already-running session too.
+
 ## Summary
 
 Replace the current `~/.claude-accounts/accounts/<name>/{credentials,keychain}` +

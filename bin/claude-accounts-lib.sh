@@ -163,3 +163,15 @@ _keychain_read() {
   command -v security >/dev/null 2>&1 || return 1
   security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# Emit a UserPromptSubmit hook JSON payload with a systemMessage: shown to
+# the user as a UI-level notice, not added to the conversation Claude sees
+# (unlike plain stdout/additionalContext, it doesn't repeat on every turn's
+# token count). No jq dependency — the payload is a single flat string field.
+# ---------------------------------------------------------------------------
+_emit_system_message() {
+  local msg="$1" escaped
+  escaped=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '{"systemMessage":"%s"}\n' "$escaped"
+}
