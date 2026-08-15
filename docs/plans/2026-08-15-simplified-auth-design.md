@@ -95,6 +95,69 @@ percentages. Split these, since their feasibility is very different:
   to the status line, keep `claude-accounts-hook` focused on account
   resolution + identity reporting.
 
+## Revision 4: Linux support
+
+Everything except credential storage was already portable bash — the rc
+file, `.claude-accounts` resolution, locking, expiry check, org-cache,
+and hook orchestration have no macOS dependency. The one real dependency
+was `_keychain_write`/`_keychain_read`, which shelled out to `security`
+and silently no-op'd on any other OS (the wrapper would just pass
+through untouched, since `command -v security` failed).
+
+Renamed those two to `_credential_write`/`_credential_read` and added a
+`uname -s` dispatch (`_os()`):
+
+- **Darwin**: unchanged — `security` against the `Claude Code-credentials`
+  Keychain service, directly verified earlier against a real login on
+  this project's own development machine.
+- **Linux**: reads/writes `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json`
+  directly as a file (`chmod 600` after writing). This is based on public
+  reports, **not independently verified** — this sandbox has no Linux
+  host. One data point for appropriate skepticism: the same source that
+  reported this file path also reported the macOS Keychain service name
+  as `claude-code`, which we know from direct verification is wrong (it's
+  `Claude Code-credentials`). Treat the Linux path as "probably right,
+  unconfirmed in detail" until tested against a real `claude login` on
+  Linux.
+- **Anything else**: silent no-op/failure, same graceful-degradation
+  behavior as today.
+
+Two defensive details, since the exact JSON shape Claude Code writes on
+Linux is unknown:
+- `_credential_read`'s Linux branch strips raw newline/tab bytes
+  unconditionally before returning the content. This is always safe for
+  valid JSON — a literal (unescaped) newline or tab inside a JSON string
+  is invalid per spec, so any such byte in the raw file is structural
+  whitespace between tokens, never part of actual field content. Needed
+  because `~/.claude-accountsrc` and the org-cache are one-entry-per-line
+  files; if Claude Code writes pretty-printed (multi-line) JSON there,
+  storing it unmodified would corrupt that format. Verified against a
+  simulated pretty-printed credentials file in a sandboxed test.
+- `_debug` (under `CLAUDE_ACCOUNTS_DEBUG=1`) traces the read file's path,
+  character count, and whether `refreshTokenExpiresAt` was found in it —
+  without printing the actual token content, so a user diagnosing a
+  Linux mismatch doesn't leak secrets into their terminal scrollback.
+
+Comments and README wording that generically described "the Keychain"
+were changed to "the credential store" where the statement applies to
+both OSes; the macOS-specific Keychain service name mention stays
+explicit where it's actually about Keychain.
+
+Tested with a second sandboxed suite (9 scenarios) that mocks `uname -s`
+to report Linux and never puts a `security`-equivalent on PATH, so it
+genuinely exercises the Linux dispatch branch rather than falling
+through to Darwin: OS detection, newline-compaction of a pretty-printed
+credentials file, correct file writes with `600` permissions,
+`CLAUDE_CONFIG_DIR` override honored, default-location left untouched
+when overridden, and the expiry hard-stop. All passed. The original
+17-scenario macOS suite was re-run after the rename and still passes
+unchanged.
+
+**Still needed**: real-world verification on an actual Linux machine
+(user has one available) — specifically confirming the credentials file
+path, its JSON shape, and that a `claude login` there round-trips
+correctly through this backend.
+
 ## Summary
 
 Replace the current `~/.claude-accounts/accounts/<name>/{credentials,keychain}` +

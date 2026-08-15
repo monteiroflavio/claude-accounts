@@ -18,12 +18,12 @@ curl -fsSL https://raw.githubusercontent.com/monteiroflavio/claude-accounts/main
   log in with `/login`, and the account you were using is saved to
   `~/.claude-accountsrc` on your very next message — no need to end the
   session.
-- **Concurrent session isolation** – every message forces the Keychain back
-  to the account this project resolves to (its `.claude-accounts` file, or
-  the default), so multiple Claude Code sessions with different accounts
-  run at the same time without clobbering each other — even if you `/login`
-  to a different account mid-session, this project's messages keep using
-  its assigned account.
+- **Concurrent session isolation** – every message forces the credential
+  store back to the account this project resolves to (its `.claude-accounts`
+  file, or the default), so multiple Claude Code sessions with different
+  accounts run at the same time without clobbering each other — even if you
+  `/login` to a different account mid-session, this project's messages keep
+  using its assigned account.
 - **Clear expiry** – if an account's refresh token has expired, `claude`
   tells you to log back in instead of failing silently.
 - **Safe storage** – credentials live in `~/.claude-accountsrc`, never
@@ -36,7 +36,11 @@ curl -fsSL https://raw.githubusercontent.com/monteiroflavio/claude-accounts/main
 ## Requirements
 
 - Bash 4.0+
-- macOS (for Keychain-based credential storage)
+- macOS or Linux — credential storage is OS-specific: the system Keychain
+  on macOS, or `~/.claude/.credentials.json` (`$CLAUDE_CONFIG_DIR` if set)
+  on Linux. The Linux path is based on public reports, not independently
+  verified against every Claude Code version — if it doesn't work for you,
+  run with `CLAUDE_ACCOUNTS_DEBUG=1` and open an issue with the trace.
 - `python3` (install.sh and uninstall.sh only — used to edit
   `settings.json`; the wrapper and hooks that run on every message/session
   don't need it)
@@ -126,22 +130,23 @@ When you run `claude`, the wrapper walks up from your current directory
 looking for a `.claude-accounts` file. If it finds one, it uses that email;
 otherwise it falls back to the default (first line of
 `~/.claude-accountsrc`). It looks up that email's saved credential blob and
-writes it into the macOS Keychain before handing off to the real `claude`
-binary.
+writes it into the OS credential store — the Keychain on macOS,
+`~/.claude/.credentials.json` on Linux — before handing off to the real
+`claude` binary.
 
 `claude-accounts-hook` runs before every message (via the UserPromptSubmit
 hook) and does three things, in order:
 
 1. Saves whichever account you're currently logged in as (from
-   `~/.claude.json`) and the current Keychain token into
+   `~/.claude.json`) and the current credential-store token into
    `~/.claude-accountsrc` — this is how accounts get added or refreshed,
    immediately, without any separate "save" step. Its organization name
    (also from `~/.claude.json`) is cached alongside it in
    `~/.claude-accounts/org-cache`, keyed by email — a separate file, since
-   it isn't part of the Keychain credential blob and doesn't belong in the
-   rc file's `email:credentialBlob` format.
-2. Forces the Keychain back to this project's resolved account (its
-   `.claude-accounts` file, or the default). This always wins — even over a
+   it isn't part of the credential blob and doesn't belong in the rc
+   file's `email:credentialBlob` format.
+2. Forces the credential store back to this project's resolved account
+   (its `.claude-accounts` file, or the default). This always wins — even over a
    `/login` you just did in this same session. A session's messages only
    ever use its assigned account; point `.claude-accounts` at a different
    account yourself if you want it used here. This is what keeps
@@ -153,8 +158,8 @@ hook) and does three things, in order:
    conversation Claude sees, so it doesn't cost tokens or repeat in the
    transcript every turn. Useful because the CLI's own status display can
    lag: it caches the account identity in `~/.claude.json` at `/login`
-   time and doesn't re-derive it from the live Keychain token, so it can
-   visibly disagree with which account a message actually used — the
+   time and doesn't re-derive it from the live credential-store token, so
+   it can visibly disagree with which account a message actually used — the
    `systemMessage` is the ground truth. You'll also see a warning here if
    the resolved account has no saved credentials yet, or if its refresh
    token has expired. The organization name is only shown once it's been
