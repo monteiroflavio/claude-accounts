@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # claude-accounts-hook — UserPromptSubmit hook
-# Re-injects the correct account's Keychain token before each message, so
-# concurrent claude sessions using different accounts don't clobber each
-# other's Keychain entry between messages.
+#
+# Runs on every message. Two jobs, in order:
+#   1. Save whatever account is currently authenticated into
+#      ~/.claude-accountsrc immediately — so a mid-session /login is
+#      registered on your very next message, without waiting for the
+#      session to end.
+#   2. Force the Keychain back to the account this directory resolves to
+#      (its .claude-accounts file, or the rc file's default) for every
+#      message. This is absolute: it always wins, even over a /login you
+#      just did in this same session — a session's messages only ever use
+#      its assigned account. Point .claude-accounts at the new account
+#      yourself if you want it used here.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./claude-accounts-lib.sh
@@ -12,6 +21,19 @@ trap _unlock EXIT
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 
+# --- 1. Save the currently authenticated account, right away -----------
+live_email=$(_live_email) || true
+if [[ -n "$live_email" ]]; then
+  live_blob=$(_keychain_read) || true
+  if [[ -n "$live_blob" ]]; then
+    _lock
+    _rc_upsert "$live_email" "$live_blob"
+    _unlock
+    _debug "saved currently authenticated account '$live_email'"
+  fi
+fi
+
+# --- 2. Force this project's resolved account back into Keychain -------
 email=$(_resolve_email "$PROJECT_DIR") || exit 0
 blob=$(_lookup_blob "$email") || exit 0
 

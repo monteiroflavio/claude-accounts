@@ -2,6 +2,36 @@
 
 Date: 2026-08-15
 
+## Revision (same day): save timing
+
+Original version below had the SessionEnd hook as the only place accounts
+get saved — meaning a fresh `/login` wasn't registered until the whole
+session exited. In practice this was confirmed by testing (opened a
+session, sent one message, checked the rc file — nothing there yet; only
+appeared after exiting). That lag is a bad experience, so:
+
+- `claude-accounts-hook` (UserPromptSubmit) now saves the currently
+  authenticated account (email + Keychain blob) into the rc file on
+  **every message**, before it does its existing job of forcing Keychain
+  back to the resolved project/default account. So a mid-session `/login`
+  is registered on your very next message.
+- The forced resolution in step 2 is absolute by explicit decision: it
+  always wins, even over an account you just logged into in the same
+  session. There is no "stay on what I just logged into" mode — isolation
+  correctness for concurrent sessions was prioritized over that
+  convenience. If you want a session to use a different account, update
+  its `.claude-accounts` file; that's the user's responsibility, not
+  something the hook infers.
+- `claude-accounts-session-end` (SessionEnd) is kept only as a backstop
+  for logging in and exiting without ever sending a message (the hook
+  above needs a message to run).
+- The email extraction that both scripts need (`oauthAccount.emailAddress`
+  from `~/.claude.json`) moved from a `python3` one-liner to a shared
+  `_live_email()` helper in the lib using `grep`/`sed`, since it now runs
+  on every message rather than once per session — avoids paying a `python3`
+  startup cost on the hot path. `python3` remains a dependency only for
+  `install.sh`/`uninstall.sh` (editing `settings.json`).
+
 ## Summary
 
 Replace the current `~/.claude-accounts/accounts/<name>/{credentials,keychain}` +
