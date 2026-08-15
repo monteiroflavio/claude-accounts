@@ -15,6 +15,25 @@ echo ""
 mkdir -p "$INSTALL_DIR" "$ACCOUNTS_DIR"
 
 # -------------------------------------------------------------------------
+# Remove old-format state from a prior install. This version stores
+# accounts in ~/.claude-accountsrc (flat file) instead of a per-account
+# directory tree, and has no claude-account CLI anymore.
+# -------------------------------------------------------------------------
+OLD_PATHS=(
+  "$ACCOUNTS_DIR/accounts"
+  "$ACCOUNTS_DIR/links"
+  "$ACCOUNTS_DIR/current"
+  "$ACCOUNTS_DIR/current-dir"
+  "$INSTALL_DIR/claude-account"
+)
+for p in "${OLD_PATHS[@]}"; do
+  if [[ -e "$p" ]]; then
+    rm -rf "$p"
+    echo "==> Removed old-format state: $p"
+  fi
+done
+
+# -------------------------------------------------------------------------
 # Locate the real claude binary.
 # Valid = executable and does NOT contain our wrapper marker.
 # -------------------------------------------------------------------------
@@ -93,15 +112,14 @@ fi
 # -------------------------------------------------------------------------
 # Install the wrapper scripts
 # -------------------------------------------------------------------------
-echo "==> Installing bin/claude         → $INSTALL_DIR/claude"
+echo "==> Installing bin/claude-accounts-lib.sh → $INSTALL_DIR/claude-accounts-lib.sh"
+cp "$SCRIPT_DIR/bin/claude-accounts-lib.sh" "$INSTALL_DIR/claude-accounts-lib.sh"
+
+echo "==> Installing bin/claude              → $INSTALL_DIR/claude"
 # Remove symlink before copy so we don't write through it to the real binary.
 [[ -L "$INSTALL_DIR/claude" ]] && rm -f "$INSTALL_DIR/claude"
 cp "$SCRIPT_DIR/bin/claude" "$INSTALL_DIR/claude"
 chmod +x "$INSTALL_DIR/claude"
-
-echo "==> Installing bin/claude-account → $INSTALL_DIR/claude-account"
-cp "$SCRIPT_DIR/bin/claude-account" "$INSTALL_DIR/claude-account"
-chmod +x "$INSTALL_DIR/claude-account"
 
 echo "==> Installing bin/claude-accounts-hook → $INSTALL_DIR/claude-accounts-hook"
 cp "$SCRIPT_DIR/bin/claude-accounts-hook" "$INSTALL_DIR/claude-accounts-hook"
@@ -134,7 +152,7 @@ if [[ -n "$SHELL_RC" ]]; then
 fi
 
 # -------------------------------------------------------------------------
-# Configure UserPromptSubmit hook in ~/.claude/settings.json
+# Configure UserPromptSubmit + SessionEnd hooks in ~/.claude/settings.json
 # -------------------------------------------------------------------------
 CLAUDE_SETTINGS_DIR="$HOME/.claude"
 CLAUDE_SETTINGS="$CLAUDE_SETTINGS_DIR/settings.json"
@@ -219,12 +237,13 @@ echo "Installation complete!"
 echo ""
 echo "Next steps:"
 if [[ -n "$SHELL_RC" ]]; then
-  echo "  1. Reload your shell:           source $SHELL_RC"
+  echo "  1. Reload your shell:     source $SHELL_RC"
 else
   echo "  1. Add $INSTALL_DIR to your PATH, then open a new terminal."
 fi
-echo "  2. Log in to Claude Code:       claude"
-echo "  3. Save credentials as account: claude-account add personal"
-echo "  4. Link a project directory:    cd ~/project && claude-account link personal"
+echo "  2. Log in to Claude Code: claude"
+echo "     (exiting saves your account to ~/.claude-accountsrc automatically)"
+echo "  3. Link a project:        echo you@example.com > .claude-accounts"
 echo ""
-echo "Diagnose issues any time with: claude-account doctor"
+echo "The first account you log in with becomes the default (used whenever"
+echo "a directory has no .claude-accounts file)."

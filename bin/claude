@@ -4,18 +4,11 @@
 # Requires install.sh to have been run first; it records the real claude
 # binary path in ~/.claude-accounts/real-path.
 
-ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
-ACCOUNTS_DB="$ACCOUNTS_DIR/accounts"
-LINKS_FILE="$ACCOUNTS_DIR/links"
-CURRENT_FILE="$ACCOUNTS_DIR/current"
-CURRENT_DIR_FILE="$ACCOUNTS_DIR/current-dir"
-REAL_PATH_FILE="$ACCOUNTS_DIR/real-path"
-CLAUDE_JSON="$HOME/.claude.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./claude-accounts-lib.sh
+source "$SCRIPT_DIR/claude-accounts-lib.sh"
 
-# Set CLAUDE_ACCOUNTS_DEBUG=1 to trace wrapper decisions.
-_debug() {
-  [[ "${CLAUDE_ACCOUNTS_DEBUG:-0}" == "1" ]] && echo "[claude-accounts] $*" >&2 || true
-}
+REAL_PATH_FILE="$CLAUDE_ACCOUNTS_DIR/real-path"
 
 # ---------------------------------------------------------------------------
 # Find the real claude binary. Resolution order:
@@ -115,83 +108,27 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Walk from PWD up to / looking for a directory→account link.
-# ---------------------------------------------------------------------------
-_find_linked_account() {
-  [[ -f "$LINKS_FILE" ]] || return 0
-  local dir="$PWD"
-  while true; do
-    local match=""
-    match=$(grep -F "$dir " "$LINKS_FILE" 2>/dev/null | awk '{print $2}' | head -1) || true
-    if [[ -n "$match" ]]; then
-      echo "$match"
-      return 0
-    fi
-    [[ "$dir" == "/" ]] && break
-    dir="$(dirname "$dir")"
-  done
-  return 0
-}
-
-# ---------------------------------------------------------------------------
-# Swap ~/.claude.json and keychain with a named account's saved credentials.
-# The hook (claude-accounts-hook) handles per-message keychain swaps for
-# concurrent session isolation; this startup swap ensures the initial token.
-# ---------------------------------------------------------------------------
-_activate_account() {
-  local name="$1"
-  local cred_file="$ACCOUNTS_DB/$name/credentials"
-  local keychain_file="$ACCOUNTS_DB/$name/keychain"
-
-  if [[ ! -f "$cred_file" ]]; then
-    echo "claude-accounts: account '$name' is linked here but has no saved credentials." >&2
-    echo "  Run: claude-account list" >&2
-    return 1
-  fi
-
-  # Persist the currently active account's .claude.json before switching
-  local current=""
-  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
-  if [[ -n "$current" && "$current" != "$name" && -f "$CLAUDE_JSON" ]]; then
-    mkdir -p "$ACCOUNTS_DB/$current"
-    cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$current/credentials" || true
-    _debug "saved credentials for '$current'"
-  fi
-
-  cp "$cred_file" "$CLAUDE_JSON" || {
-    echo "claude-accounts: failed to write credentials for '$name' to $CLAUDE_JSON" >&2
-    return 1
-  }
-
-  # Swap keychain to this account's token for the initial session
-  if [[ -f "$keychain_file" ]]; then
-    security add-generic-password \
-      -s "Claude Code-credentials" \
-      -a "$(whoami)" \
-      -w "$(cat "$keychain_file")" \
-      -U 2>/dev/null || true
-  fi
-
-  echo "$name" > "$CURRENT_FILE" || true
-  echo "$PWD" > "$CURRENT_DIR_FILE" || true
-  _debug "activated account '$name' (json + keychain) from $PWD"
-  return 0
-}
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
-  local linked=""
-  linked=$(_find_linked_account) || true
+  local email=""
+  email=$(_resolve_email "$PWD") || true
 
-  if [[ -n "$linked" ]]; then
-    local current=""
-    [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
-    _debug "directory linked to '$linked' (active: '${current:-none}')"
-    # Always activate — even when linked == current, another session's
-    # /login may have overwritten ~/.claude.json with a different account's token.
-    _activate_account "$linked" || true
+  if [[ -n "$email" ]]; then
+    local blob=""
+    if blob=$(_lookup_blob "$email"); then
+      if _blob_expired "$blob"; then
+        echo "claude-accounts: account '$email' has expired." >&2
+        echo "  Run 'claude' and /login again to refresh it." >&2
+        exit 1
+      fi
+      _keychain_write "$blob"
+      _debug "injected credentials for '$email'"
+    else
+      _debug "no saved credentials for '$email' yet; passing through untouched"
+    fi
+  else
+    _debug "no account resolved (no rc file, no .claude-accounts); passing through"
   fi
 
   local real_bin=""
