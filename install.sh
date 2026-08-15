@@ -5,14 +5,33 @@
 set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.claude-accounts/bin}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
 REAL_PATH_FILE="$ACCOUNTS_DIR/real-path"
+REPO_RAW_BASE="https://raw.githubusercontent.com/monteiroflavio/claude-accounts/main"
 
 echo "==> claude-accounts installer"
 echo ""
 
 mkdir -p "$INSTALL_DIR" "$ACCOUNTS_DIR"
+
+# -------------------------------------------------------------------------
+# Locate the scripts to install. When this file is run from a local clone,
+# they live next to it. When it's streamed via `curl | bash` (the
+# documented one-liner), $BASH_SOURCE has nothing usable to resolve a
+# directory from — fetch the scripts straight from GitHub into a scratch
+# directory instead.
+# -------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+
+if [[ -z "$SCRIPT_DIR" || ! -f "$SCRIPT_DIR/bin/claude" ]]; then
+  echo "==> No local checkout found; downloading scripts from GitHub"
+  SCRIPT_DIR="$(mktemp -d)"
+  trap 'rm -rf "$SCRIPT_DIR"' EXIT
+  mkdir -p "$SCRIPT_DIR/bin"
+  for f in claude claude-accounts-lib.sh claude-accounts-hook claude-accounts-session-end; do
+    curl -fsSL "$REPO_RAW_BASE/bin/$f" -o "$SCRIPT_DIR/bin/$f"
+  done
+fi
 
 # -------------------------------------------------------------------------
 # Remove old-format state from a prior install. This version stores
