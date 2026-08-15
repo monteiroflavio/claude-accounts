@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# claude-accounts-hook — UserPromptSubmit hook
+# Re-injects the correct account's Keychain token before each message, so
+# concurrent claude sessions using different accounts don't clobber each
+# other's Keychain entry between messages.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./claude-accounts-lib.sh
+source "$SCRIPT_DIR/claude-accounts-lib.sh"
+
+trap _unlock EXIT
+
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+
+email=$(_resolve_email "$PROJECT_DIR") || exit 0
+blob=$(_lookup_blob "$email") || exit 0
+
+# An expired refresh token can't be silently fixed mid-session; leave the
+# running session's own state alone rather than injecting a dead token.
+_blob_expired "$blob" && exit 0
+
+_lock
+_keychain_write "$blob"
+_unlock

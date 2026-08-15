@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# claude-accounts-session-end — SessionEnd hook
+# Saves the currently authenticated account's Keychain token back into
+# ~/.claude-accountsrc, keyed by its email. This is the only place accounts
+# get registered: logging in as a new account with /login and exiting is
+# enough — no explicit command needed. It also keeps refreshed tokens
+# (silent access-token renewals) in sync automatically.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./claude-accounts-lib.sh
+source "$SCRIPT_DIR/claude-accounts-lib.sh"
+
+trap _unlock EXIT
+
+CLAUDE_JSON="$HOME/.claude.json"
+[[ -f "$CLAUDE_JSON" ]] || exit 0
+command -v python3 >/dev/null 2>&1 || exit 0
+
+email=$(python3 -c "
+import json
+try:
+    with open('$CLAUDE_JSON') as f:
+        d = json.load(f)
+    print(d.get('oauthAccount', {}).get('emailAddress', ''))
+except Exception:
+    pass
+" 2>/dev/null)
+[[ -z "$email" ]] && exit 0
+
+blob=$(_keychain_read) || exit 0
+[[ -z "$blob" ]] && exit 0
+
+_lock
+_rc_upsert "$email" "$blob"
+_debug "saved credentials for '$email' to $CLAUDE_ACCOUNTS_RC"
+_unlock

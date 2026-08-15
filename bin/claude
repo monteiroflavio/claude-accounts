@@ -4,17 +4,11 @@
 # Requires install.sh to have been run first; it records the real claude
 # binary path in ~/.claude-accounts/real-path.
 
-ACCOUNTS_DIR="${CLAUDE_ACCOUNTS_DIR:-$HOME/.claude-accounts}"
-ACCOUNTS_DB="$ACCOUNTS_DIR/accounts"
-LINKS_FILE="$ACCOUNTS_DIR/links"
-CURRENT_FILE="$ACCOUNTS_DIR/current"
-REAL_PATH_FILE="$ACCOUNTS_DIR/real-path"
-CLAUDE_JSON="$HOME/.claude.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./claude-accounts-lib.sh
+source "$SCRIPT_DIR/claude-accounts-lib.sh"
 
-# Set CLAUDE_ACCOUNTS_DEBUG=1 to trace wrapper decisions.
-_debug() {
-  [[ "${CLAUDE_ACCOUNTS_DEBUG:-0}" == "1" ]] && echo "[claude-accounts] $*" >&2 || true
-}
+REAL_PATH_FILE="$CLAUDE_ACCOUNTS_DIR/real-path"
 
 # ---------------------------------------------------------------------------
 # Find the real claude binary. Resolution order:
@@ -101,7 +95,7 @@ Resolution order tried:
   3. PATH + common locations     (not found)
 
 To fix:
-  a) Re-run the installer (it will prompt you for the path):
+  a) Re-run the installer (it will auto-discover the path):
        bash /path/to/claude-accounts/install.sh
 
   b) Record the path manually:
@@ -114,69 +108,27 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Walk from PWD up to / looking for a directory→account link.
-# ---------------------------------------------------------------------------
-_find_linked_account() {
-  [[ -f "$LINKS_FILE" ]] || return 0
-  local dir="$PWD"
-  while true; do
-    local match=""
-    match=$(grep -F "$dir " "$LINKS_FILE" 2>/dev/null | awk '{print $2}' | head -1) || true
-    if [[ -n "$match" ]]; then
-      echo "$match"
-      return 0
-    fi
-    [[ "$dir" == "/" ]] && break
-    dir="$(dirname "$dir")"
-  done
-  return 0
-}
-
-# ---------------------------------------------------------------------------
-# Swap ~/.claude.json with a named account's saved credentials.
-# ---------------------------------------------------------------------------
-_activate_account() {
-  local name="$1"
-  local cred_file="$ACCOUNTS_DB/$name/credentials"
-
-  if [[ ! -f "$cred_file" ]]; then
-    echo "claude-accounts: account '$name' is linked here but has no saved credentials." >&2
-    echo "  Run: claude-account list" >&2
-    return 1
-  fi
-
-  # Persist the currently active account's credentials before switching
-  local current=""
-  [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
-  if [[ -n "$current" && "$current" != "$name" && -f "$CLAUDE_JSON" ]]; then
-    mkdir -p "$ACCOUNTS_DB/$current"
-    cp "$CLAUDE_JSON" "$ACCOUNTS_DB/$current/credentials" || true
-    _debug "saved credentials for '$current'"
-  fi
-
-  cp "$cred_file" "$CLAUDE_JSON" || {
-    echo "claude-accounts: failed to write credentials for '$name' to $CLAUDE_JSON" >&2
-    return 1
-  }
-  echo "$name" > "$CURRENT_FILE" || true
-  _debug "activated account '$name'"
-  return 0
-}
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
-  local linked=""
-  linked=$(_find_linked_account) || true
+  local email=""
+  email=$(_resolve_email "$PWD") || true
 
-  if [[ -n "$linked" ]]; then
-    local current=""
-    [[ -f "$CURRENT_FILE" ]] && current=$(cat "$CURRENT_FILE") || true
-    _debug "directory linked to '$linked' (active: '${current:-none}')"
-    if [[ "$linked" != "$current" ]]; then
-      _activate_account "$linked" || true
+  if [[ -n "$email" ]]; then
+    local blob=""
+    if blob=$(_lookup_blob "$email"); then
+      if _blob_expired "$blob"; then
+        echo "claude-accounts: account '$email' has expired." >&2
+        echo "  Run 'claude' and /login again to refresh it." >&2
+        exit 1
+      fi
+      _keychain_write "$blob"
+      _debug "injected credentials for '$email'"
+    else
+      _debug "no saved credentials for '$email' yet; passing through untouched"
     fi
+  else
+    _debug "no account resolved (no rc file, no .claude-accounts); passing through"
   fi
 
   local real_bin=""
