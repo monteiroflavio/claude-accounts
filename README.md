@@ -15,11 +15,15 @@ curl -fsSL https://raw.githubusercontent.com/monteiroflavio/claude-accounts/main
   email address) in a project; the `claude` wrapper picks it up
   automatically before each run.
 - **Zero commands** – there's no CLI to learn. Accounts register themselves:
-  log in with `/login`, and the account you were using is saved
-  automatically when the session ends.
-- **Concurrent session isolation** – per-message Keychain swapping via a
-  UserPromptSubmit hook lets multiple Claude Code sessions with different
-  accounts run at the same time without clobbering each other.
+  log in with `/login`, and the account you were using is saved to
+  `~/.claude-accountsrc` on your very next message — no need to end the
+  session.
+- **Concurrent session isolation** – every message forces the Keychain back
+  to the account this project resolves to (its `.claude-accounts` file, or
+  the default), so multiple Claude Code sessions with different accounts
+  run at the same time without clobbering each other — even if you `/login`
+  to a different account mid-session, this project's messages keep using
+  its assigned account.
 - **Clear expiry** – if an account's refresh token has expired, `claude`
   tells you to log back in instead of failing silently.
 - **Safe storage** – credentials live in `~/.claude-accountsrc`, never
@@ -33,8 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/monteiroflavio/claude-accounts/main
 
 - Bash 4.0+
 - macOS (for Keychain-based credential storage)
-- `python3` (install script, and the SessionEnd hook — used to read/write
-  JSON)
+- `python3` (install.sh and uninstall.sh only — used to edit
+  `settings.json`; the wrapper and hooks that run on every message/session
+  don't need it)
 
 ---
 
@@ -76,12 +81,12 @@ chmod +x install.sh bin/claude bin/claude-accounts-hook bin/claude-accounts-sess
 ```bash
 # 1. Log in to your first account (opens browser)
 claude
-# ... /login, then exit the session ...
+# ... /login, then send any message ...
 # → saved automatically as the default account in ~/.claude-accountsrc
 
 # 2. Log in to a second account (inside any claude session)
 claude
-# /login as a different account, then exit
+# /login as a different account, then send any message
 # → appended as a second line in ~/.claude-accountsrc
 
 # 3. Link a project directory to an account
@@ -93,8 +98,8 @@ claude
 ```
 
 That's it — there's no `claude-account add/use/link` command. Accounts are
-identified by their own email address and register themselves the first
-time you log in and exit.
+identified by their own email address and register themselves the moment
+you log in and send a message (or exit, if you don't send one).
 
 ---
 
@@ -122,16 +127,25 @@ otherwise it falls back to the default (first line of
 writes it into the macOS Keychain before handing off to the real `claude`
 binary.
 
-For concurrent sessions, `claude-accounts-hook` runs before every message
-(via the UserPromptSubmit hook) and re-injects the correct project's
-Keychain entry, so two sessions using different accounts don't stomp on
-each other.
+`claude-accounts-hook` runs before every message (via the UserPromptSubmit
+hook) and does two things, in order:
 
-`claude-accounts-session-end` runs when a session exits (SessionEnd hook):
-it reads whichever account you're currently logged in as (from
-`~/.claude.json`) and the current Keychain token, and saves/updates that
-account's line in `~/.claude-accountsrc`. This is the only way accounts get
-added or refreshed — there's no separate "save" step.
+1. Saves whichever account you're currently logged in as (from
+   `~/.claude.json`) and the current Keychain token into
+   `~/.claude-accountsrc` — this is how accounts get added or refreshed,
+   immediately, without any separate "save" step.
+2. Forces the Keychain back to this project's resolved account (its
+   `.claude-accounts` file, or the default). This always wins — even over a
+   `/login` you just did in this same session. A session's messages only
+   ever use its assigned account; point `.claude-accounts` at a different
+   account yourself if you want it used here. This is what keeps
+   concurrent sessions using different accounts from stomping on each
+   other.
+
+`claude-accounts-session-end` runs when a session exits (SessionEnd hook)
+and does the same save as step 1 above — it's just a backstop for
+logging in and exiting without ever sending a message, since the hook
+above only runs on messages.
 
 If an account's refresh token has expired, `claude` prints a message and
 exits instead of launching with a dead credential:
@@ -142,8 +156,8 @@ claude-accounts: account 'work@example.com' has expired.
 ```
 
 A merely stale *access* token (refresh token still valid) isn't treated as
-expired — the real `claude` binary refreshes it silently, and the next
-SessionEnd run picks up the refreshed token automatically.
+expired — the real `claude` binary refreshes it silently, and your next
+message picks up the refreshed token automatically.
 
 ---
 

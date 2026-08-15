@@ -133,6 +133,20 @@ _blob_expired() {
 }
 
 # ---------------------------------------------------------------------------
+# Currently authenticated account: oauthAccount.emailAddress from
+# ~/.claude.json. Extracted with grep/sed (not python3) since this runs on
+# the UserPromptSubmit hot path, once per message.
+# ---------------------------------------------------------------------------
+_live_email() {
+  local claude_json="$HOME/.claude.json" email
+  [[ -f "$claude_json" ]] || return 1
+  email=$(grep -o '"emailAddress"[^,}]*' "$claude_json" 2>/dev/null | head -1 \
+    | sed -E 's/.*"emailAddress"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+  [[ -n "$email" ]] || return 1
+  echo "$email"
+}
+
+# ---------------------------------------------------------------------------
 # Keychain access (macOS only; no-ops elsewhere).
 # ---------------------------------------------------------------------------
 _keychain_write() {
